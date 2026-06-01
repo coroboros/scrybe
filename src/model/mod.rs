@@ -185,16 +185,23 @@ pub fn guard_memory(model: Model, jobs: usize, total: Option<u64>) -> Result<(),
         return Ok(());
     };
     if would_exceed_memory(total, model, jobs) {
-        // Recommend a model that fits at the SAME job count, so the hint can never
-        // name the model just refused.
+        let need = human_size(estimated_memory(model, jobs));
+        let have = human_size(total);
+        // Recommend a model that fits at the SAME job count, so the hint never names
+        // the model just refused. On a machine so small nothing fits at this count,
+        // `largest_fitting` falls back to the smallest model that still doesn't fit —
+        // don't quote it; point at lowering jobs instead.
         let fits = largest_fitting(total, jobs);
-        return Err(ScrybeError::OutOfMemory {
-            detail: format!(
-                "{model} at {jobs} job(s) needs ~{}, but only {} is available; the largest model that fits is `{fits}`",
-                human_size(estimated_memory(model, jobs)),
-                human_size(total),
-            ),
-        });
+        let detail = if would_exceed_memory(total, fits, jobs) {
+            format!(
+                "{model} at {jobs} job(s) needs ~{need}, but only {have} is available; no model fits at {jobs} job(s)"
+            )
+        } else {
+            format!(
+                "{model} at {jobs} job(s) needs ~{need}, but only {have} is available; the largest model that fits is `{fits}`"
+            )
+        };
+        return Err(ScrybeError::OutOfMemory { detail });
     }
     Ok(())
 }
@@ -536,6 +543,22 @@ mod tests {
         assert_eq!(resolve_model(None, Some(2 * GB), 1), Model::Small);
         // Unknown RAM falls back to the nominal default.
         assert_eq!(resolve_model(None, None, 1), DEFAULT_MODEL);
+    }
+
+    #[test]
+    fn oom_hint_never_names_a_model_that_does_not_fit() {
+        // When something fits, the hint names a fitting model.
+        let err = guard_memory(Model::LargeV3, 3, Some(8 * GB)).unwrap_err();
+        assert!(err.to_string().contains("fits is `"), "{err}");
+        // When nothing fits at this RAM (even tiny exceeds budget), the hint must not
+        // quote a model that was just refused — it points at lowering jobs instead.
+        let err = guard_memory(Model::LargeV3, 1, Some(GB)).unwrap_err();
+        let msg = err.to_string();
+        assert!(msg.contains("no model fits"), "{msg}");
+        assert!(
+            !msg.contains("fits is `"),
+            "named a non-fitting model: {msg}"
+        );
     }
 
     #[test]
