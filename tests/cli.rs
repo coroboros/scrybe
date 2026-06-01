@@ -132,6 +132,23 @@ fn malformed_audio_fails_without_panicking() {
 }
 
 #[test]
+fn single_file_unsupported_codec_exits_10() {
+    if !tiny_cached() {
+        eprintln!("skipping: tiny model not cached");
+        return;
+    }
+    // The single-file --json path decodes directly (not via batch), so a decode
+    // failure propagates UnsupportedCodec → exit 10 at the process boundary — the
+    // only end-to-end check of that mapping (the batched path re-wraps it as 20).
+    scrybe()
+        .args(["--model", "tiny", "--json", "tests/fixtures/aac/he-aac.m4a"])
+        .assert()
+        .failure()
+        .code(10)
+        .stderr(predicate::str::contains("--decoder ffmpeg"));
+}
+
+#[test]
 fn missing_input_path_exits_file_not_found() {
     scrybe()
         .arg("definitely-not-a-real-file.xyz")
