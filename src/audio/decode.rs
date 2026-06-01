@@ -261,7 +261,9 @@ fn decode_via_ffmpeg_capped(path: &Path, max_samples: usize) -> Result<Decoded, 
     // path is defense-in-depth, and falls back to the raw path if it fails.
     let input = std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
     let mut child = Command::new("ffmpeg")
-        .args(["-v", "error", "-i"])
+        // `-nostdin` so a crafted container can never coax ffmpeg into reading the
+        // parent's stdin (defense-in-depth; not exploitable as invoked here).
+        .args(["-nostdin", "-v", "error", "-i"])
         .arg(&input)
         .args(["-f", "f32le", "-acodec", "pcm_f32le", "-ac", "1", "-ar"])
         .arg(TARGET_SAMPLE_RATE.to_string())
@@ -428,6 +430,12 @@ fn is_he_aac_asc(asc: &[u8]) -> bool {
         Some(_) if r.read(14).is_some() => {}
         _ => return false,
     }
+    // extensionFlag. Conformant AAC-LC (AOT 2) sets it to 0, leaving the sync
+    // extension at the determinate offset read below. A set flag introduces
+    // AOT-specific trailing bits we don't consume, so the 11-bit read misaligns and
+    // almost never matches 0x2B7 — the stream then falls through to the AAC-LC path
+    // (symphonia, or `--decoder ffmpeg` if that mis-decodes). A non-issue for the
+    // backward-compatible HE-AAC this targets, where the flag is 0.
     if r.read(1).is_none() {
         return false;
     }

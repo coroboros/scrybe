@@ -12,7 +12,7 @@ use scrybe::cli::Decoder;
 use scrybe::error::ScrybeError;
 
 mod common;
-use common::ffmpeg_available;
+use common::require_ffmpeg_or_skip;
 
 fn decode(path: &str, decoder: Decoder) -> Result<AudioPcm, ScrybeError> {
     audio::load_audio(Path::new(path), decoder)
@@ -115,18 +115,20 @@ fn aac_lc_decodes_without_false_positive() {
 
 #[test]
 fn ffmpeg_fallback_decodes_he_aac() {
-    if !ffmpeg_available() {
-        eprintln!("skipping: ffmpeg not on PATH");
+    if !require_ffmpeg_or_skip() {
         return;
     }
     let pcm = decode("tests/fixtures/aac/he-aac.m4a", Decoder::Ffmpeg).expect("ffmpeg he-aac");
     assert!(!pcm.samples.is_empty());
+    // The ffmpeg path emits mono 16 kHz directly, so provenance reflects that shape —
+    // the only provenance assertion on the ffmpeg branch (symphonia is covered above).
+    assert_eq!(pcm.source_sample_rate, 16_000, "ffmpeg path outputs 16 kHz");
+    assert_eq!(pcm.source_channels, 1, "ffmpeg path downmixes to mono");
 }
 
 #[test]
 fn ffmpeg_rejects_non_audio_with_exit_10() {
-    if !ffmpeg_available() {
-        eprintln!("skipping: ffmpeg not on PATH");
+    if !require_ffmpeg_or_skip() {
         return;
     }
     // A non-audio file drives ffmpeg's failure branch, mapped to exit 10.
@@ -137,8 +139,7 @@ fn ffmpeg_rejects_non_audio_with_exit_10() {
 
 #[test]
 fn ffmpeg_decodes_leading_dash_filename() {
-    if !ffmpeg_available() {
-        eprintln!("skipping: ffmpeg not on PATH");
+    if !require_ffmpeg_or_skip() {
         return;
     }
     // A filename starting with `-` must not be parsed by ffmpeg as an option — the

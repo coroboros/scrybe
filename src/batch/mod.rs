@@ -139,6 +139,11 @@ struct FileResult {
 }
 
 /// Run the batch. Returns the process exit code: 0 all clear, 20 partial failure.
+///
+/// Installs a process-global SIGINT handler bound to *this* run's interrupt flag, so
+/// it is meant to be called once per process (the binary does). A second call sets a
+/// fresh flag the already-installed handler never updates — the first handler wins,
+/// and the second run would not observe Ctrl-C.
 pub fn run(engine: &Engine, files: &[PathBuf], cfg: &Config<'_>) -> Result<i32, ScrybeError> {
     let interrupted = Arc::new(AtomicBool::new(false));
     {
@@ -397,6 +402,14 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn realtime_factor_formats_and_guards_zero_wall() {
+        // Pure ×RT helper: None when no wall time has elapsed (no divide-by-zero),
+        // otherwise audio/wall to one decimal. Shared by the live bar and the summary.
+        assert!(realtime_factor(10.0, 0.0).is_none());
+        assert_eq!(realtime_factor(20.0, 10.0).as_deref(), Some("2.0×RT"));
     }
 
     #[test]
