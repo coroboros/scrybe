@@ -102,7 +102,13 @@ pub fn decode_file(path: &Path) -> Result<Decoded, ScrybeError> {
         .make_audio_decoder(audio_params, &AudioDecoderOptions::default())
         .map_err(|e| unsupported(format!("no decoder for this codec: {e}")))?;
 
-    let mut samples = Vec::new();
+    // Pre-size from the (guard-bounded) frame count to avoid ~log2(N) reallocs on
+    // long files; the loop also caps growth for sources that don't declare length.
+    let mut samples = match source_frames {
+        Some(frames) => Vec::with_capacity((frames as usize).saturating_mul(channels as usize)),
+        None => Vec::new(),
+    };
+    let max_samples = (MAX_SOURCE_PCM_BYTES / SAMPLE_BYTES) as usize;
     let mut chunk: Vec<f32> = Vec::new();
     loop {
         match format.next_packet() {
@@ -111,7 +117,14 @@ pub fn decode_file(path: &Path) -> Result<Decoded, ScrybeError> {
                     continue;
                 }
                 match decoder.decode(&packet) {
-                    Ok(decoded) => append_f32(&decoded, &mut chunk, &mut samples),
+                    Ok(decoded) => {
+                        append_f32(&decoded, &mut chunk, &mut samples);
+                        if samples.len() > max_samples {
+                            return Err(unsupported(
+                                "audio exceeds the in-memory decode limit; use `--jobs 1`, a shorter clip, or `--decoder ffmpeg`".to_owned(),
+                            ));
+                        }
+                    }
                     Err(SymphoniaError::DecodeError(_) | SymphoniaError::IoError(_)) => continue,
                     Err(e) => return Err(unsupported(format!("decode error: {e}"))),
                 }

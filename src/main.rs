@@ -91,20 +91,9 @@ fn transcribe(cli: &Cli) -> Result<i32, ScrybeError> {
     }
 
     let model_path = model::ensure_available(cli.model, cli.offline)?;
-    let vad_path = match model::ensure_vad(cli.offline) {
-        Ok(path) => Some(path),
-        Err(_) => {
-            anstream::eprintln!(
-                "{}",
-                color::paint(
-                    color::WARN,
-                    "voice-activity model unavailable — using no-speech gating only",
-                )
-            );
-            None
-        }
-    };
-    let engine = engine::Engine::load(&model_path, vad_path.as_deref())?;
+    // VAD is the mandated correctness floor and is bundled, so it is always on.
+    let vad_path = model::ensure_vad()?;
+    let engine = engine::Engine::load(&model_path, Some(&vad_path))?;
 
     let threads = cli
         .threads

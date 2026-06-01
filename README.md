@@ -14,6 +14,10 @@ segments) work on the CPU backend, with parallel batch orchestration and the
 output writers. Metal is a build feature (`--features metal`) for Apple Silicon;
 the default build is CPU so it compiles anywhere.
 
+JSON output carries segment-level timestamps; word-level timestamps are deferred
+to a future minor (addable as an optional `words` field without bumping the
+schema version).
+
 ## Install
 
 Once published, via any of:

@@ -60,6 +60,17 @@ fn models_path_points_at_hub_cache() {
 }
 
 #[test]
+fn english_only_model_rejects_foreign_lang() {
+    // The capability gate runs before any download, so this is network-free.
+    scrybe()
+        .args(["--model", "distil-large-v3.5", "--lang", "fr", WAV])
+        .assert()
+        .failure()
+        .code(2)
+        .stderr(predicate::str::contains("English-only"));
+}
+
+#[test]
 fn offline_without_cache_exits_11() {
     // An empty HF_HOME forces a cache miss; --offline must error with exit 11 and
     // make no network call (the offline branch never touches the API).

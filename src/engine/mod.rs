@@ -5,7 +5,9 @@
 //! here — `condition_on_previous_text` is disabled to break repetition loops,
 //! whisper.cpp's default no-speech/logprob/entropy thresholds and temperature
 //! fallback are kept, and segments whose no-speech probability is high are
-//! dropped so silence does not hallucinate text.
+//! dropped so silence does not hallucinate text. Long-audio windowing is
+//! delegated to whisper.cpp (its internal 30 s windows) plus Silero VAD
+//! segmentation — the deliberate substitute for hand-rolled overlapped chunking.
 
 use std::fmt;
 use std::path::{Path, PathBuf};

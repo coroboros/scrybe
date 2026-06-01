@@ -159,6 +159,102 @@ fn out_dir_redirects_output_away_from_input() {
 }
 
 #[test]
+fn dry_run_lists_files_without_writing() {
+    let out = tempfile::tempdir().unwrap();
+    scrybe()
+        .args(["--dry-run", "--format", "txt", "--out-dir"])
+        .arg(out.path())
+        .arg("tests/fixtures/speech/en.wav")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("dry-run"));
+    assert!(
+        !out.path().join("en.txt").exists(),
+        "dry-run must not write output"
+    );
+}
+
+#[test]
+fn mixed_batch_reports_failure_and_exits_20() {
+    if !tiny_cached() {
+        eprintln!("skipping: tiny model not cached");
+        return;
+    }
+    let out = tempfile::tempdir().unwrap();
+    scrybe()
+        .args(["--model", "tiny", "--format", "txt", "--out-dir"])
+        .arg(out.path())
+        .args([
+            "tests/fixtures/speech/en.wav",
+            "tests/fixtures/aac/he-aac.m4a",
+        ])
+        .assert()
+        .failure()
+        .code(20)
+        .stderr(predicate::str::contains("en.wav"))
+        .stderr(predicate::str::contains("he-aac.m4a"));
+    // The good file completes despite the bad one (no abort-on-first-failure).
+    assert!(
+        out.path().join("en.txt").exists(),
+        "the good file should still be written"
+    );
+}
+
+#[test]
+fn skips_up_to_date_output_unless_forced() {
+    if !tiny_cached() {
+        eprintln!("skipping: tiny model not cached");
+        return;
+    }
+    let out = tempfile::tempdir().unwrap();
+    let transcribe = |force: bool| {
+        let mut cmd = scrybe();
+        cmd.args(["--model", "tiny", "--format", "txt"]);
+        if force {
+            cmd.arg("--force");
+        }
+        cmd.arg("--out-dir")
+            .arg(out.path())
+            .arg("tests/fixtures/speech/en.wav");
+        cmd
+    };
+    transcribe(false)
+        .assert()
+        .success()
+        .stderr(predicate::str::contains("ok"));
+    // Second run: output is current → skipped.
+    transcribe(false)
+        .assert()
+        .success()
+        .stderr(predicate::str::contains("up to date"));
+    // --force reprocesses.
+    transcribe(true)
+        .assert()
+        .success()
+        .stderr(predicate::str::contains("ok"));
+}
+
+#[test]
+fn silence_produces_no_transcript() {
+    if !tiny_cached() {
+        eprintln!("skipping: tiny model not cached");
+        return;
+    }
+    let out = tempfile::tempdir().unwrap();
+    scrybe()
+        .args(["--model", "tiny", "--format", "txt", "--out-dir"])
+        .arg(out.path())
+        .arg("tests/fixtures/speech/silence.wav")
+        .assert()
+        .success();
+    let text = std::fs::read_to_string(out.path().join("silence.txt")).unwrap_or_default();
+    assert!(
+        text.trim().is_empty(),
+        "silence must not hallucinate, got: {text:?}"
+    );
+}
+
+#[test]
 fn models_list_shows_every_model() {
     scrybe()
         .args(["models", "list"])

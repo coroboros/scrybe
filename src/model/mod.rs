@@ -181,11 +181,33 @@ pub fn ensure_available(model: Model, offline: bool) -> Result<PathBuf, ScrybeEr
     )
 }
 
-/// Ensure the Silero VAD model is on disk and verified. Tiny (~865 KB); the
-/// engine's voice-activity gating uses it, falling back to threshold gating only
-/// when it cannot be fetched.
-pub fn ensure_vad(offline: bool) -> Result<PathBuf, ScrybeError> {
-    fetch_verified(VAD_REPO, VAD_FILE, VAD_SHA256, "silero-vad", offline)
+/// The Silero VAD model, bundled in the binary so the spec's mandated correctness
+/// floor is always available — no network, works on a first offline run.
+const SILERO_VAD_BYTES: &[u8] = include_bytes!(concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/assets/ggml-silero-v5.1.2.bin"
+));
+
+/// Ensure the Silero VAD model is on disk, returning its path. Prefers a cached
+/// copy (HF cache, or a prior materialization); otherwise writes the bundled,
+/// SHA-pinned model so VAD never depends on the network.
+pub fn ensure_vad() -> Result<PathBuf, ScrybeError> {
+    if let Some(path) = cached(VAD_REPO, VAD_FILE)
+        && sha256_matches(&path, VAD_SHA256, "silero-vad").unwrap_or(false)
+    {
+        return Ok(path);
+    }
+    let dir = cache_dir().join("scrybe");
+    let path = dir.join(VAD_FILE);
+    if path.exists() && sha256_matches(&path, VAD_SHA256, "silero-vad").unwrap_or(false) {
+        return Ok(path);
+    }
+    let io_error = |e: std::io::Error| ScrybeError::Io {
+        detail: format!("could not materialize the bundled VAD model: {e}"),
+    };
+    std::fs::create_dir_all(&dir).map_err(&io_error)?;
+    std::fs::write(&path, SILERO_VAD_BYTES).map_err(&io_error)?;
+    Ok(path)
 }
 
 /// Fetch `file` from `repo`, verifying its SHA-256 (`label` names it in errors).
@@ -323,5 +345,14 @@ mod tests {
         assert!(info(Model::LargeV3).can_translate);
         assert!(!info(Model::LargeV3Turbo).can_translate);
         assert!(!info(Model::DistilLargeV35).can_translate);
+    }
+
+    #[test]
+    fn bundled_vad_is_always_available_and_verified() {
+        // The mandated VAD floor must resolve with no network (bundled), and the
+        // returned file must match the pinned SHA.
+        let path = ensure_vad().expect("bundled VAD must always be available");
+        assert!(path.exists());
+        assert!(sha256_matches(&path, VAD_SHA256, "silero-vad").unwrap());
     }
 }
