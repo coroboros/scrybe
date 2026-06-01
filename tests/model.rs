@@ -14,8 +14,8 @@ const WAV: &str = "tests/fixtures/audio/tone.wav";
 
 #[test]
 fn memory_guard_refuses_oversized_run() {
-    // The guard scales with per-job decode buffers (~384 MiB each). 1200 jobs is
-    // ~450 GiB of buffers alone — past 85% headroom on any real runner (even a
+    // The guard scales with per-job decode buffers (1 GiB each). 1200 jobs is
+    // ~1.2 TiB of buffers alone — past 85% headroom on any real runner (even a
     // 512 GiB box), so this drives exit 12 without depending on the host's RAM.
     scrybe()
         .args(["--model", "large-v3", "--jobs", "1200", WAV])
@@ -75,6 +75,24 @@ fn english_only_model_accepts_en_case_insensitively() {
             "distil-large-v3.5",
             "--lang",
             "EN",
+            "--dry-run",
+            WAV,
+        ])
+        .assert()
+        .success()
+        .stderr(predicate::str::contains("English-only").not());
+}
+
+#[test]
+fn english_only_model_accepts_explicit_auto() {
+    // `--lang auto` degenerates to detection (English for an English-only model);
+    // it must not be rejected like a foreign language. --dry-run stays network-free.
+    scrybe()
+        .args([
+            "--model",
+            "distil-large-v3.5",
+            "--lang",
+            "auto",
             "--dry-run",
             WAV,
         ])

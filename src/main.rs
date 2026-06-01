@@ -174,6 +174,7 @@ fn validate_model_capabilities(model: Model, cli: &Cli) -> Option<i32> {
     }
     if let Some(lang) = cli.lang.as_deref()
         && !lang.eq_ignore_ascii_case("en")
+        && !lang.eq_ignore_ascii_case("auto")
         && !info.multilingual
     {
         return Some(usage_error(&format!(

@@ -74,6 +74,17 @@ pub fn resolve_jobs(requested: Option<usize>, backend: Backend) -> (usize, Optio
     }
 }
 
+/// Whether a file can be skipped: not forced and every requested output already
+/// exists and is at least as new as the input.
+fn decide_skip(
+    file: &std::path::Path,
+    force: bool,
+    formats: &[Format],
+    out_dir: Option<&std::path::Path>,
+) -> bool {
+    !force && output::outputs_up_to_date(file, formats, out_dir)
+}
+
 /// Everything one batch run needs beyond the files and engine.
 pub struct Config<'a> {
     pub decoder: Decoder,
@@ -144,9 +155,7 @@ pub fn run(engine: &Engine, files: &[PathBuf], cfg: &Config<'_>) -> Result<i32, 
                     if producer_interrupt.load(Ordering::SeqCst) {
                         return;
                     }
-                    let msg = if !cfg.force
-                        && output::outputs_up_to_date(file, cfg.formats, cfg.out_dir)
-                    {
+                    let msg = if decide_skip(file, cfg.force, cfg.formats, cfg.out_dir) {
                         DecodeMsg::Skip
                     } else {
                         match audio::load_audio(file, cfg.decoder) {
@@ -323,6 +332,7 @@ fn print_summary(results: &[Option<FileResult>], interrupted: bool) {
 
 #[cfg(test)]
 mod tests {
+    #![allow(clippy::unwrap_used, clippy::expect_used)]
     use super::*;
 
     #[test]
@@ -347,6 +357,32 @@ mod tests {
         assert_eq!(cpu_default_jobs(8), 4);
         assert_eq!(cpu_default_jobs(2), 1);
         assert_eq!(cpu_default_jobs(1), 1); // never zero
+    }
+
+    #[test]
+    fn decide_skip_honors_force_and_freshness() {
+        use std::time::{Duration, SystemTime};
+        let dir = tempfile::tempdir().unwrap();
+        let input = dir.path().join("clip.wav");
+        std::fs::write(&input, b"x").unwrap();
+        let formats = [Format::Txt];
+        let out = dir.path().join("clip.txt");
+
+        // No output yet → not skipped.
+        assert!(!decide_skip(&input, false, &formats, Some(dir.path())));
+
+        // Output present and newer than the input → skipped.
+        std::fs::write(&out, b"y").unwrap();
+        std::fs::File::options()
+            .write(true)
+            .open(&out)
+            .unwrap()
+            .set_modified(SystemTime::now() + Duration::from_secs(60))
+            .unwrap();
+        assert!(decide_skip(&input, false, &formats, Some(dir.path())));
+
+        // ...unless --force, which always reprocesses.
+        assert!(!decide_skip(&input, true, &formats, Some(dir.path())));
     }
 
     fn result(outcome: Outcome) -> Option<FileResult> {

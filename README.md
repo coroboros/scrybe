@@ -68,6 +68,12 @@ HE-AAC/SBR is not handled by the built-in decoder — it fails with exit code `1
 rather than emit garbled audio. Re-encode with `ffmpeg`, or pass `--decoder ffmpeg`
 to decode through a system `ffmpeg` when one is on `PATH`.
 
+The built-in decoder reads the whole source into memory before resampling, capped at
+1 GiB of raw PCM per file. Typical hour-long speech (mono, up to ~44 kHz) fits; a very
+long or high-bitrate source — e.g. an hour of 48 kHz stereo — exceeds the cap and
+fails loud with exit code `10`. Use `--decoder ffmpeg`, which streams straight to
+16 kHz mono and has no such limit.
+
 ## Models
 
 | Model | Notes |

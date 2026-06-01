@@ -90,6 +90,17 @@ mod tests {
     }
 
     #[test]
+    fn upsamples_below_target_rate() {
+        // 1 s of 8 kHz → ~16k samples: output larger than input, exercising the
+        // real resampler's upsample path (8 kHz telephony is a common input).
+        let src_rate = 8_000;
+        let input = vec![0.0f32; src_rate as usize];
+        let out = to_16k_mono(input, src_rate).unwrap();
+        let ratio = out.len() as f64 / f64::from(TARGET_SAMPLE_RATE);
+        assert!((0.98..=1.02).contains(&ratio), "len {} not ~16k", out.len());
+    }
+
+    #[test]
     fn passthrough_at_target_rate() {
         let input = vec![0.1f32, 0.2, 0.3];
         assert_eq!(
