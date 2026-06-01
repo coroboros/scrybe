@@ -242,6 +242,13 @@ fn append_f32(decoded: &GenericAudioBufferRef<'_>, chunk: &mut Vec<f32>, out: &m
 /// Decode by shelling out to a system `ffmpeg`, producing 16 kHz mono f32 PCM
 /// directly. The escape hatch for codecs symphonia cannot handle (e.g. HE-AAC).
 pub fn decode_via_ffmpeg(path: &Path) -> Result<Decoded, ScrybeError> {
+    decode_via_ffmpeg_capped(path, MAX_SOURCE_SAMPLES)
+}
+
+/// `decode_via_ffmpeg` with an injectable sample ceiling, so the overflow teardown
+/// (kill the child and stop reading *before* joining the stderr drain) is testable
+/// against a real subprocess in bounded time rather than only at the ~4.6-hour cap.
+fn decode_via_ffmpeg_capped(path: &Path, max_samples: usize) -> Result<Decoded, ScrybeError> {
     let unsupported = |detail: String| ScrybeError::unsupported_codec(path, detail);
 
     // `-i` consumes its next argument literally (ffmpeg has no `--` end-of-options
@@ -273,25 +280,31 @@ pub fn decode_via_ffmpeg(path: &Path) -> Result<Decoded, ScrybeError> {
 
     // Stream stdout, decoding complete f32le samples as they arrive and bailing the
     // moment the running total would exceed the ceiling — so peak memory stays
-    // bounded by `MAX_SOURCE_PCM_BYTES` like the symphonia path, instead of
-    // buffering the whole (possibly huge) stream first. Drain stderr on a scoped
-    // thread concurrently: a corrupt input can emit more than the pipe buffer to
-    // stderr, and reading stdout first would otherwise deadlock waiting on a child
-    // blocked writing stderr. The byte loop is a pure, unit-tested helper.
+    // bounded by `MAX_SOURCE_PCM_BYTES` like the symphonia path. Drain stderr on a
+    // scoped thread concurrently so a corrupt input that floods stderr can't deadlock
+    // the stdout read. The byte loop is a pure, unit-tested helper.
     let (decoded, errs) = std::thread::scope(|scope| {
         let reader = scope.spawn(move || {
             let mut buf = String::new();
             let _ = stderr.read_to_string(&mut buf);
             buf
         });
-        let decoded = read_f32le_stream(&mut stdout, MAX_SOURCE_SAMPLES);
+        let decoded = read_f32le_stream(&mut stdout, max_samples);
+        // On early stop (Overflow/Io) ffmpeg may still be writing to a now-undrained
+        // stdout pipe; it would block on the full pipe and never close stderr, hanging
+        // the join forever. Kill it and drop the read end BEFORE joining, so stderr
+        // hits EOF and the scope returns. (Killing here, inside the scope, is what
+        // makes the post-scope teardown reachable — the earlier ordering deadlocked.)
+        if decoded.is_err() {
+            let _ = child.kill();
+        }
+        drop(stdout);
         (decoded, reader.join().unwrap_or_default())
     });
-    // On a stream error we already have all we need — kill the child; otherwise wait
-    // for its exit status. Result classification is a pure, unit-tested helper.
+    // The error path already killed the child above; just reap it. Otherwise wait for
+    // the real exit status. Result classification is a pure, unit-tested helper.
     let success = match &decoded {
         Err(_) => {
-            let _ = child.kill();
             let _ = child.wait();
             false
         }
@@ -498,6 +511,30 @@ mod tests {
             read_f32le_stream(reader, 2),
             Err(StreamError::Overflow)
         ));
+    }
+
+    #[test]
+    fn ffmpeg_overflow_kills_child_without_deadlock() {
+        // Real-subprocess regression for the overflow teardown. en.wav (~3 s →
+        // ~192 KB of f32le, well past the 64 KB pipe buffer) decoded via ffmpeg with a
+        // 100-sample ceiling: the reader stops early while ffmpeg keeps writing and
+        // blocks on the full pipe. The teardown must kill the child and return the
+        // Overflow error (exit 10), not hang on the stderr-reader join. Under the
+        // previous join-before-kill ordering this hangs — a regression fails via the
+        // test timeout instead of passing.
+        if !Command::new("ffmpeg")
+            .arg("-version")
+            .output()
+            .is_ok_and(|o| o.status.success())
+        {
+            eprintln!("skipping: ffmpeg not on PATH");
+            return;
+        }
+        let err = decode_via_ffmpeg_capped(Path::new("tests/fixtures/speech/en.wav"), 100)
+            .err()
+            .expect("oversized decode must fail, not hang or succeed");
+        assert_eq!(err.exit_code(), 10);
+        assert!(err.to_string().contains("too large"), "{err}");
     }
 
     #[test]
