@@ -220,6 +220,73 @@ fn uppercase_lang_is_normalized_not_silently_collapsed() {
 }
 
 #[test]
+fn long_trailing_silence_does_not_hallucinate_or_loop() {
+    // WS-4's headline correctness floor over a long silence gap. The catastrophic
+    // failure the floor must prevent is a repetition LOOP / the gap filling with
+    // hallucinated text; whisper.cpp can still emit a rare stray token over silence
+    // (an inherent limit VAD + the no-speech gate reduce but don't fully erase), so
+    // assert the achievable guarantee: no loop and the gap stays near-empty — not a
+    // literal zero. Build speech + ~30 s of silence at runtime (no multi-MB fixture)
+    // through the production path (VAD on, as main wires it).
+    let Some(model_path) = tiny_model_path() else {
+        eprintln!("skipping: tiny model not cached — run `scrybe models pull tiny`");
+        return;
+    };
+    let vad_path = scrybe::model::ensure_vad().expect("bundled VAD materializes");
+    let engine = Engine::load(&model_path, Some(&vad_path)).expect("load tiny model with VAD");
+    let speech = audio::load_audio(
+        Path::new("tests/fixtures/speech/en.wav"),
+        Decoder::Symphonia,
+    )
+    .expect("decode en.wav");
+    let silence = audio::load_audio(
+        Path::new("tests/fixtures/speech/silence.wav"),
+        Decoder::Symphonia,
+    )
+    .expect("decode silence.wav");
+    let speech_secs = speech.samples.len() as f64 / 16_000.0;
+    let reps = (30.0 / silence.duration_secs()).ceil() as usize;
+    let mut samples = speech.samples;
+    for _ in 0..reps {
+        samples.extend_from_slice(&silence.samples); // ~30 s of real silence
+    }
+
+    let transcript = engine
+        .transcribe(
+            &samples,
+            &TranscribeOptions {
+                language: Some("en".to_owned()),
+                translate: false,
+                threads: 4,
+            },
+            |_| {},
+        )
+        .expect("transcribe");
+
+    // The ~30 s gap stays near-empty: a stray token may slip through, but the floor
+    // must keep the silence from filling with text (a loop would emit dozens here).
+    let in_silence = transcript
+        .segments
+        .iter()
+        .filter(|s| s.start >= speech_secs + 1.0)
+        .count();
+    assert!(
+        in_silence <= 2,
+        "silence over-hallucinated: {in_silence} segments in the gap"
+    );
+    // No repetition loop: no transcript text repeats more than twice (a loop would
+    // repeat one phrase many times across the gap).
+    let mut counts = std::collections::HashMap::new();
+    for segment in &transcript.segments {
+        *counts.entry(segment.text.trim()).or_insert(0_usize) += 1;
+    }
+    assert!(
+        counts.values().all(|&n| n <= 2),
+        "repetition loop detected: {counts:?}"
+    );
+}
+
+#[test]
 fn empty_pcm_surfaces_as_transcription_failed_exit_16() {
     // The only exit code whose production path was asserted only synthetically.
     // Empty PCM is the deterministic way to force a real `full()` fault: against the
