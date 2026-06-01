@@ -4,8 +4,9 @@
 //! rejected with an actionable message (symphonia is AAC-LC only). The optional
 //! ffmpeg path shells out for codecs symphonia cannot handle.
 
+use std::io::Read as _;
 use std::path::Path;
-use std::process::Command;
+use std::process::{Command, Stdio};
 
 use symphonia::core::audio::GenericAudioBufferRef;
 use symphonia::core::codecs::audio::AudioDecoderOptions;
@@ -186,13 +187,15 @@ pub fn decode_via_ffmpeg(path: &Path) -> Result<Decoded, ScrybeError> {
     // ffmpeg as an option (ffmpeg has no `--` end-of-options marker; `-i` consumes
     // the next argument literally, so an absolute path is the safe form).
     let input = std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
-    let output = Command::new("ffmpeg")
+    let mut child = Command::new("ffmpeg")
         .args(["-v", "error", "-i"])
         .arg(&input)
         .args(["-f", "f32le", "-acodec", "pcm_f32le", "-ac", "1", "-ar"])
         .arg(TARGET_SAMPLE_RATE.to_string())
         .arg("pipe:1")
-        .output()
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
         .map_err(|e| {
             if e.kind() == std::io::ErrorKind::NotFound {
                 unsupported("`--decoder ffmpeg` requested but ffmpeg is not on PATH".to_owned())
@@ -201,26 +204,59 @@ pub fn decode_via_ffmpeg(path: &Path) -> Result<Decoded, ScrybeError> {
             }
         })?;
 
-    if !output.status.success() {
-        return Err(unsupported(format!(
-            "ffmpeg failed: {}",
-            String::from_utf8_lossy(&output.stderr).trim()
-        )));
+    let Some(mut stdout) = child.stdout.take() else {
+        let _ = child.kill();
+        let _ = child.wait();
+        return Err(unsupported("could not capture ffmpeg output".to_owned()));
+    };
+
+    // Stream stdout, decoding complete f32le samples as they arrive and bailing the
+    // moment the running total would exceed the ceiling — so peak memory stays
+    // bounded by `MAX_SOURCE_PCM_BYTES` like the symphonia path, instead of
+    // buffering the whole (possibly huge) stream first. `-v error` keeps stderr
+    // tiny, so draining stdout before reading it cannot deadlock.
+    let max_samples = (MAX_SOURCE_PCM_BYTES / SAMPLE_BYTES) as usize;
+    let mut samples: Vec<f32> = Vec::new();
+    let mut pending: Vec<u8> = Vec::new(); // < 4 leftover bytes spanning reads
+    let mut buf = [0u8; 1 << 16];
+    loop {
+        let read = match stdout.read(&mut buf) {
+            Ok(0) => break,
+            Ok(n) => n,
+            Err(e) => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return Err(unsupported(format!("reading ffmpeg output failed: {e}")));
+            }
+        };
+        pending.extend_from_slice(&buf[..read]);
+        let full = pending.len() / 4 * 4;
+        samples.extend(
+            pending[..full]
+                .chunks_exact(4)
+                .map(|b| f32::from_le_bytes([b[0], b[1], b[2], b[3]])),
+        );
+        pending.drain(..full);
+        if samples.len() > max_samples {
+            let _ = child.kill();
+            let _ = child.wait();
+            return Err(unsupported(
+                "audio is too large to decode in memory; use a shorter clip or `--jobs 1`"
+                    .to_owned(),
+            ));
+        }
     }
 
-    // Same in-memory ceiling as the symphonia path; the stdout bytes are already
-    // f32le PCM, so the byte length is exact. Reject before the second alloc.
-    if output.stdout.len() as u64 > MAX_SOURCE_PCM_BYTES {
-        return Err(unsupported(
-            "audio is too large to decode in memory; use a shorter clip".to_owned(),
-        ));
+    let status = child
+        .wait()
+        .map_err(|e| unsupported(format!("waiting for ffmpeg failed: {e}")))?;
+    if !status.success() {
+        let mut err = String::new();
+        if let Some(mut stderr) = child.stderr.take() {
+            let _ = stderr.read_to_string(&mut err);
+        }
+        return Err(unsupported(format!("ffmpeg failed: {}", err.trim())));
     }
-
-    let samples = output
-        .stdout
-        .chunks_exact(4)
-        .map(|b| f32::from_le_bytes([b[0], b[1], b[2], b[3]]))
-        .collect::<Vec<_>>();
     if samples.is_empty() {
         return Err(unsupported("ffmpeg produced no audio".to_owned()));
     }

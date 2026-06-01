@@ -3,6 +3,7 @@
 //! Subtitle timestamps are sanitized so they are never negative and never
 //! overlap. JSON is a stable, versioned schema for downstream tooling.
 
+use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
 
 use serde::Serialize;
@@ -119,13 +120,15 @@ fn render_txt(transcript: &Transcript) -> String {
 fn render_srt(transcript: &Transcript) -> String {
     let mut out = String::new();
     for (index, segment) in sanitized(&transcript.segments).into_iter().enumerate() {
-        out.push_str(&format!(
-            "{}\n{} --> {}\n{}\n\n",
+        // Writing into a String is infallible; the trailing blank line ends the cue.
+        let _ = writeln!(
+            out,
+            "{}\n{} --> {}\n{}\n",
             index + 1,
             timestamp(segment.start, ','),
             timestamp(segment.end, ','),
             segment.text,
-        ));
+        );
     }
     out
 }
@@ -133,12 +136,13 @@ fn render_srt(transcript: &Transcript) -> String {
 fn render_vtt(transcript: &Transcript) -> String {
     let mut out = String::from("WEBVTT\n\n");
     for segment in sanitized(&transcript.segments) {
-        out.push_str(&format!(
-            "{} --> {}\n{}\n\n",
+        let _ = writeln!(
+            out,
+            "{} --> {}\n{}\n",
             timestamp(segment.start, '.'),
             timestamp(segment.end, '.'),
             segment.text,
-        ));
+        );
     }
     out
 }
@@ -146,12 +150,13 @@ fn render_vtt(transcript: &Transcript) -> String {
 fn render_tsv(transcript: &Transcript) -> String {
     let mut out = String::from("start\tend\ttext\n");
     for segment in sanitized(&transcript.segments) {
-        out.push_str(&format!(
-            "{}\t{}\t{}\n",
+        let _ = writeln!(
+            out,
+            "{}\t{}\t{}",
             (segment.start * 1000.0).round() as i64,
             (segment.end * 1000.0).round() as i64,
             segment.text,
-        ));
+        );
     }
     out
 }

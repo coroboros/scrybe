@@ -42,6 +42,9 @@ fn discovery_skips_non_audio() {
             .iter()
             .any(|p| p.extension().is_some_and(|e| e == "txt"))
     );
+    // Exactly the five audio files in the folder (tone.{wav,mp3,flac,ogg,m4a});
+    // notes.txt is skipped. A discovery regression that adds/drops one fails here.
+    assert_eq!(found.len(), 5, "discovered: {found:?}");
 }
 
 #[test]

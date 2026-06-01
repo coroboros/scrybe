@@ -89,14 +89,16 @@ pub fn info(model: Model) -> ModelInfo {
     }
 }
 
-/// Memory budget for one concurrent decode. This is the single source of truth for
-/// the decode-memory invariant: it is BOTH the amount `guard_memory` reserves per
-/// job AND the hard per-file raw-PCM ceiling the decoder enforces (the decode path
-/// derives its ceiling from this value). The batch pool runs at most `jobs` decodes
-/// at once, each bounded by this ceiling, so the aggregate resident decode memory
-/// can never exceed `DECODE_BUFFER * jobs` — the exact figure reserved here. Files
-/// whose raw PCM would exceed it fail loud, with `--decoder ffmpeg` (which streams
-/// straight to 16 kHz mono) as the escape for very large sources.
+/// Per-job decode-memory budget, and the single source of truth for the decode
+/// ceiling: it is BOTH the amount `guard_memory` reserves per job AND the hard
+/// per-file raw-PCM ceiling the decoder enforces (the decode path derives its
+/// ceiling from this value, so the two cannot desync). The batch pool runs at most
+/// `jobs` decodes at once, each holding a raw buffer bounded by this ceiling, so
+/// resident decode memory tracks `DECODE_BUFFER * jobs`. The brief downmix/resample
+/// transient can momentarily exceed the raw size by a small multiple for extreme
+/// rate conversions; the guard's 15% headroom absorbs it. Sources whose raw PCM
+/// would exceed the ceiling fail loud, with `--decoder ffmpeg` (which streams
+/// straight to 16 kHz mono) as the escape for very large files.
 pub(crate) const DECODE_BUFFER: u64 = 1024 * 1024 * 1024;
 
 /// Estimated peak memory transcribing `model` at `jobs` concurrent decodes. The
@@ -108,7 +110,12 @@ pub(crate) const DECODE_BUFFER: u64 = 1024 * 1024 * 1024;
 fn estimated_memory(model: Model, jobs: usize) -> u64 {
     let weights = info(model).size;
     let working_set = weights / 2;
-    weights + working_set + DECODE_BUFFER.saturating_mul(jobs.max(1) as u64)
+    // Saturating throughout so an absurd `--jobs` can't overflow (debug panic /
+    // release wrap); the result clamps to u64::MAX, which the guard reads as
+    // "won't fit".
+    weights
+        .saturating_add(working_set)
+        .saturating_add(DECODE_BUFFER.saturating_mul(jobs.max(1) as u64))
 }
 
 /// Fraction of detected RAM a run may use, leaving headroom for the OS and other
@@ -119,12 +126,12 @@ const MEMORY_BUDGET_PERCENT: u64 = 85;
 /// before dividing so the percentage doesn't truncate the byte total; `saturating_mul`
 /// keeps the function total over its whole `u64` domain (it is public and tested
 /// with synthetic RAM values).
-pub fn would_exceed_memory(total_ram: u64, model: Model, jobs: usize) -> bool {
+pub(crate) fn would_exceed_memory(total_ram: u64, model: Model, jobs: usize) -> bool {
     estimated_memory(model, jobs) > total_ram.saturating_mul(MEMORY_BUDGET_PERCENT) / 100
 }
 
 /// The largest model that fits at one job, for the smart default and guard hints.
-pub fn largest_fitting(total_ram: u64) -> Model {
+pub(crate) fn largest_fitting(total_ram: u64) -> Model {
     for model in [Model::LargeV3Turbo, Model::Small, Model::Base, Model::Tiny] {
         if !would_exceed_memory(total_ram, model, 1) {
             return model;
@@ -351,6 +358,35 @@ mod tests {
         assert!(would_exceed_memory(8 * GB, Model::LargeV3, 16));
         assert!(would_exceed_memory(4 * GB, Model::LargeV3, 1));
         assert!(!would_exceed_memory(8 * GB, Model::LargeV3Turbo, 1));
+    }
+
+    #[test]
+    fn sha256_matches_verifies_content_case_insensitively() {
+        // The integrity gate for every downloaded binary. Known-answer vector
+        // (SHA-256 of "abc"), checked lowercase and uppercase, plus a mismatch —
+        // so a regression that always returns true (disabling verification) fails.
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("data");
+        std::fs::write(&file, b"abc").unwrap();
+        const ABC: &str = "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad";
+        assert!(
+            sha256_matches(&file, ABC, "t").unwrap(),
+            "correct lowercase hex"
+        );
+        assert!(
+            sha256_matches(&file, &ABC.to_uppercase(), "t").unwrap(),
+            "case-insensitive match"
+        );
+        assert!(
+            !sha256_matches(&file, &"0".repeat(64), "t").unwrap(),
+            "mismatching hex is rejected"
+        );
+    }
+
+    #[test]
+    fn memory_guard_saturates_on_absurd_jobs() {
+        // A pathological job count must refuse, never overflow-panic (no-panic rule).
+        assert!(would_exceed_memory(u64::MAX, Model::Tiny, usize::MAX));
     }
 
     #[test]

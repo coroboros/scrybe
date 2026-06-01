@@ -131,6 +131,7 @@ impl Engine {
         // silence gate regardless of how the engine acts on this threshold.
         params.set_no_speech_thold(NO_SPEECH_DROP);
         params.set_logprob_thold(-1.0);
+        // entropy_thold is whisper.cpp's name for the compression-ratio gate.
         params.set_entropy_thold(2.4);
         params.set_suppress_blank(true);
         params.set_suppress_nst(true);

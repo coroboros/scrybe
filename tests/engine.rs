@@ -12,5 +12,9 @@ fn loading_a_garbage_model_exits_15() {
     std::fs::write(&bad, b"not a ggml model").unwrap();
     // `.err()` avoids requiring `Engine: Debug` for `expect_err`.
     let exit = Engine::load(&bad, None).err().map(|e| e.exit_code());
-    assert_eq!(exit, Some(15), "corrupt ggml → ModelLoadFailed, not a panic");
+    assert_eq!(
+        exit,
+        Some(15),
+        "corrupt ggml → ModelLoadFailed, not a panic"
+    );
 }

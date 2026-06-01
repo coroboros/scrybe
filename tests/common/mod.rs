@@ -15,8 +15,14 @@ pub fn scrybe() -> Command {
     cmd
 }
 
-/// Whether the tiny model is cached. Transcription tests skip cleanly when it is
-/// absent (CI fetches it once); shared so every gate uses one convention.
+/// The cached tiny-model path, or `None` when it is absent. Transcription tests
+/// skip cleanly when missing (CI fetches it once); shared so every gate — bool or
+/// path — uses one lookup and one convention.
+pub fn tiny_model_path() -> Option<std::path::PathBuf> {
+    scrybe::model::cached_path(scrybe::cli::Model::Tiny)
+}
+
+/// Whether the tiny model is cached.
 pub fn tiny_cached() -> bool {
-    scrybe::model::cached_path(scrybe::cli::Model::Tiny).is_some()
+    tiny_model_path().is_some()
 }

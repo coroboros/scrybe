@@ -17,7 +17,9 @@ use crate::error::ScrybeError;
 /// Whisper's required input sample rate.
 pub const TARGET_SAMPLE_RATE: u32 = 16_000;
 
-/// 16 kHz mono f32 PCM plus provenance about the decoded source.
+/// 16 kHz mono f32 PCM plus provenance about the decoded source. The provenance
+/// fields are a decode-observability contract the acceptance tests assert against
+/// (source rate/channels), not used by the transcription path itself.
 #[derive(Debug)]
 pub struct AudioPcm {
     pub samples: Vec<f32>,
@@ -79,5 +81,13 @@ mod tests {
     fn downmix_mono_is_passthrough() {
         let mono = vec![0.1, 0.2, 0.3];
         assert_eq!(downmix(mono.clone(), 1), mono);
+    }
+
+    #[test]
+    fn downmix_drops_trailing_partial_frame() {
+        // `chunks_exact` ignores a lone trailing sample that doesn't complete a
+        // stereo frame — documenting that intended behavior.
+        let stereo = vec![1.0, 0.0, 0.0, 1.0, 0.5];
+        assert_eq!(downmix(stereo, 2), vec![0.5, 0.5]);
     }
 }

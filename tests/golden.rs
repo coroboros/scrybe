@@ -10,15 +10,18 @@
 use std::path::Path;
 
 use scrybe::audio;
-use scrybe::cli::{Decoder, Model};
+use scrybe::cli::Decoder;
 use scrybe::engine::{Engine, TranscribeOptions};
+
+mod common;
+use common::tiny_model_path;
 
 const REFERENCE: &str = "the quick brown fox jumps over the lazy dog";
 const WER_TOLERANCE: f64 = 0.34;
 
 #[test]
 fn english_clip_within_wer_tolerance() {
-    let Some(model_path) = scrybe::model::cached_path(Model::Tiny) else {
+    let Some(model_path) = tiny_model_path() else {
         eprintln!("skipping: tiny model not cached — run `scrybe models pull tiny`");
         return;
     };
@@ -63,7 +66,7 @@ fn vad_floor_transcribes_through_the_engine() {
     // The mandated VAD floor is always on in production (main wires
     // `ensure_vad()` into `Engine::load`). The WER test above loads with VAD off,
     // so this is the only coverage of the engine's VAD arm end-to-end.
-    let Some(model_path) = scrybe::model::cached_path(Model::Tiny) else {
+    let Some(model_path) = tiny_model_path() else {
         eprintln!("skipping: tiny model not cached — run `scrybe models pull tiny`");
         return;
     };
@@ -102,7 +105,7 @@ fn translate_task_changes_output_through_the_engine() {
     // differ. A dropped or inverted `set_translate` makes them identical and fails
     // here. Differential (not an exact match) so it does not depend on tiny's weak
     // translation quality.
-    let Some(model_path) = scrybe::model::cached_path(Model::Tiny) else {
+    let Some(model_path) = tiny_model_path() else {
         eprintln!("skipping: tiny model not cached — run `scrybe models pull tiny`");
         return;
     };

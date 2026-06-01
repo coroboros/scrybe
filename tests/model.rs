@@ -95,6 +95,30 @@ fn multilingual_model_accepts_non_english_lang() {
 }
 
 #[test]
+fn offline_corrupt_cache_exits_11() {
+    // Seed a cache entry whose bytes do not match the pinned SHA, then run
+    // --offline. The integrity gate must reject it (exit 11, "checksum mismatch")
+    // without any network call — the WS-3 "corrupted cache is not used" contract.
+    let hf = tempfile::tempdir().unwrap();
+    let repo = hf.path().join("hub/models--ggerganov--whisper.cpp");
+    std::fs::create_dir_all(repo.join("refs")).unwrap();
+    std::fs::create_dir_all(repo.join("snapshots/deadbeef")).unwrap();
+    std::fs::write(repo.join("refs/main"), b"deadbeef").unwrap();
+    std::fs::write(
+        repo.join("snapshots/deadbeef/ggml-tiny.bin"),
+        b"corrupt, not a real ggml model",
+    )
+    .unwrap();
+    scrybe()
+        .env("HF_HOME", hf.path())
+        .args(["--offline", "--model", "tiny", WAV])
+        .assert()
+        .failure()
+        .code(11)
+        .stderr(predicate::str::contains("checksum mismatch"));
+}
+
+#[test]
 fn offline_without_cache_exits_11() {
     // An empty HF_HOME forces a cache miss; --offline must error with exit 11 and
     // make no network call (the offline branch never touches the API).

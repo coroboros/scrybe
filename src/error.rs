@@ -55,6 +55,8 @@ impl ScrybeError {
             Self::FileNotFound { .. } => 14,
             Self::ModelLoadFailed { .. } => 15,
             Self::TranscriptionFailed { .. } => 16,
+            // Shared "batch incomplete" bucket: some files failed, or Ctrl-C stopped
+            // the run early. Both are distinguished by their message, not the code.
             Self::PartialBatchFailure { .. } | Self::Interrupted { .. } => 20,
             Self::Io { .. } => 1,
         }

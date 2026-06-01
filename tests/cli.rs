@@ -343,6 +343,17 @@ fn ctrl_c_stops_gracefully_with_partial_exit() {
         count_ext("srt"),
         "each completed file must write both txt and srt, or neither"
     );
+    // And a produced .srt is fully written, not truncated mid-cue.
+    let srt = std::fs::read_dir(&out)
+        .unwrap()
+        .flatten()
+        .map(|e| e.path())
+        .find(|p| p.extension().is_some_and(|x| x == "srt"))
+        .expect("at least one srt produced");
+    assert!(
+        std::fs::read_to_string(&srt).unwrap().contains("-->"),
+        "a completed .srt must be a well-formed cue file"
+    );
 }
 
 #[test]

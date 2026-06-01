@@ -80,6 +80,19 @@ mod tests {
     }
 
     #[test]
+    fn handles_empty_and_sub_chunk_input() {
+        // Empty input short-circuits to an empty buffer.
+        assert!(to_16k_mono(Vec::new(), 48_000).unwrap().is_empty());
+        // Fewer samples than the FFT chunk size must resample without panicking.
+        let out = to_16k_mono(vec![0.1f32; 10], 48_000).expect("sub-chunk input");
+        assert!(
+            out.len() <= 10,
+            "tiny input yields a tiny output: {}",
+            out.len()
+        );
+    }
+
+    #[test]
     fn preserves_tone_frequency() {
         // One second of a 1 kHz tone at 48 kHz → 16 kHz: the frequency (≈1000
         // positive-going zero crossings) must survive, not just the length.
