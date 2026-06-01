@@ -59,3 +59,27 @@ panic = "deny"
 [profile.release]
 strip = true
 lto = "thin"
+
+# Cross-platform release automation. Run `dist init` / `dist generate`
+# (cargo-dist 0.32) to emit `.github/workflows/release.yml` from this config;
+# `release-plz` tags and creates the GitHub release that triggers it.
+#
+# Apple Silicon prebuilts should build with `--features metal`; Developer-ID
+# signing + notarization require the Apple Developer account (see README) and
+# are wired here only once that account exists.
+[package.metadata.dist]
+cargo-dist-version = "0.32.0"
+ci = "github"
+installers = ["shell", "powershell", "homebrew", "npm"]
+targets = [
+    "aarch64-apple-darwin",
+    "x86_64-apple-darwin",
+    "x86_64-unknown-linux-gnu",
+    "aarch64-unknown-linux-gnu",
+    "x86_64-unknown-linux-musl",
+    "x86_64-pc-windows-msvc",
+]
+tap = "coroboros/homebrew-tap"
+npm-scope = "@coroboros"
+publish-jobs = ["homebrew", "npm"]
+install-path = "CARGO_HOME"

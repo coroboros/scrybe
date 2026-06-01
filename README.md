@@ -16,12 +16,24 @@ default build is CPU so it compiles anywhere.
 
 ## Install
 
-From source, until the release channels (Homebrew, `npx`, `cargo binstall`,
-curl) are wired:
+Once published, via any of:
 
 ```sh
-cargo install --path .
+brew install coroboros/tap/scrybe   # macOS — the blessed path
+npx @coroboros/scrybe               # Node toolchains
+cargo binstall scrybe               # prebuilt binary via cargo
 ```
+
+From source (any platform; Apple Silicon adds the Metal backend):
+
+```sh
+cargo install --path .                   # CPU
+cargo install --path . --features metal  # Apple Silicon (Metal)
+```
+
+A raw GitHub-release download on macOS may be quarantined — clear it with
+`xattr -d com.apple.quarantine ./scrybe`. The Homebrew, npx, and cargo paths are
+not quarantined.
 
 ## Usage
 

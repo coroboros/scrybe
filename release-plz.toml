@@ -1,0 +1,7 @@
+# release-plz manages the version bump, CHANGELOG, git tag, and GitHub release;
+# cargo-dist (release.yml) builds and uploads the cross-platform artifacts that
+# the release triggers.
+[workspace]
+# Bare version tags (no `v` prefix), matching the release-title convention.
+git_tag_name = "{{ version }}"
+git_release_name = "{{ version }}"

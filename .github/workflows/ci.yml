@@ -1,0 +1,48 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  check:
+    name: fmt · clippy · test (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+
+      # whisper.cpp is built from source by whisper-rs-sys.
+      - name: Install cmake (Linux)
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y cmake
+
+      - name: Cache cargo registry + build
+        uses: Swatinem/rust-cache@v2
+
+      # The golden test runs on the CPU backend against a cached tiny model — no
+      # GPU runner and no per-run network download.
+      - name: Cache the tiny model
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/huggingface
+          key: hf-tiny-${{ runner.os }}
+
+      - name: Format
+        run: cargo fmt --check
+
+      - name: Lint
+        run: cargo clippy --all-targets -- -D warnings
+
+      - name: Pre-fetch the tiny model
+        run: cargo run --quiet -- models pull tiny
+
+      - name: Test
+        run: cargo test
