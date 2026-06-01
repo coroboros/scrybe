@@ -1,8 +1,11 @@
 //! Model-management acceptance tests — the WS-3 contract (network-free subset).
 //!
-//! Download/SHA/cache behavior is exercised manually against the live hub; here
-//! we pin the deterministic surface: the memory guard, translation gating, and
-//! the `models` subcommands that need no network.
+//! Covered here, no network: the memory guard, translation gating, the offline
+//! cache-hit/miss/corrupt branches, the SHA gate, and the re-download retry *state
+//! machine* (`fetch_with_retry`, unit-tested in `model`). What stays manual against
+//! the live hub — because an online `get` revalidates over the network: the first
+//! download + progress bar (AC1's transfer), resumable transfer (AC2, opaque hf-hub
+//! internals), and the live re-download leg of corrupt-cache recovery (AC5).
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
 use predicates::prelude::*;

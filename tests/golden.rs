@@ -176,6 +176,49 @@ fn auto_detects_and_reports_french() {
     );
 }
 
+#[test]
+fn uppercase_lang_is_normalized_not_silently_collapsed() {
+    // The capability gate accepts `--lang EN` case-insensitively; whisper.cpp matches
+    // case-sensitively. Without normalization an uppercase code yields a near-empty
+    // transcript and a mis-reported language. Assert the engine lowercases it: full
+    // transcript preserved, language reported as `en`.
+    let Some(model_path) = tiny_model_path() else {
+        eprintln!("skipping: tiny model not cached — run `scrybe models pull tiny`");
+        return;
+    };
+    let engine = Engine::load(&model_path, None).expect("load tiny model");
+    let pcm = audio::load_audio(
+        Path::new("tests/fixtures/speech/en.wav"),
+        Decoder::Symphonia,
+    )
+    .expect("decode en.wav");
+    let transcript = engine
+        .transcribe(
+            &pcm.samples,
+            &TranscribeOptions {
+                language: Some("EN".to_owned()),
+                translate: false,
+                threads: 4,
+            },
+            |_| {},
+        )
+        .expect("transcribe");
+    assert_eq!(
+        transcript.language, "en",
+        "uppercase --lang must normalize to en"
+    );
+    let hypothesis = transcript
+        .segments
+        .iter()
+        .map(|s| s.text.to_lowercase())
+        .collect::<Vec<_>>()
+        .join(" ");
+    assert!(
+        hypothesis.contains("fox") || hypothesis.contains("dog"),
+        "uppercase --lang collapsed the transcript: {hypothesis:?}"
+    );
+}
+
 /// Word error rate: word-level edit distance over reference length, after
 /// lowercasing and stripping punctuation.
 fn word_error_rate(reference: &str, hypothesis: &str) -> f64 {

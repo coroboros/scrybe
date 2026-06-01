@@ -151,7 +151,13 @@ impl Engine {
             params.enable_vad(true);
         }
 
-        let language = opts.language.as_deref().unwrap_or("auto");
+        // whisper.cpp matches language codes case-sensitively against lowercase ISO
+        // keys, but the capability gate accepts them case-insensitively. Normalize
+        // here so an accepted `--lang EN`/`AUTO` isn't silently rejected by whisper
+        // (which would collapse the transcript). All valid codes are lowercase, so
+        // lowercasing can't corrupt a real one.
+        let normalized = opts.language.as_deref().map(str::to_ascii_lowercase);
+        let language = normalized.as_deref().unwrap_or("auto");
         params.set_language(Some(language));
         params.set_progress_callback_safe(progress);
 
@@ -175,7 +181,7 @@ impl Engine {
         });
         let segments = filter_segments(raw);
 
-        let detected = match opts.language.as_deref() {
+        let detected = match normalized.as_deref() {
             Some(lang) if lang != "auto" => lang.to_owned(),
             _ => {
                 let id = state.full_lang_id_from_state();
