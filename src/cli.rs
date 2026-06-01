@@ -18,6 +18,10 @@ pub struct Cli {
     #[arg(value_name = "PATHS")]
     pub paths: Vec<PathBuf>,
 
+    /// Recurse into subdirectories when a path is a directory.
+    #[arg(long)]
+    pub recursive: bool,
+
     /// Whisper model to use.
     #[arg(long, value_enum, default_value_t = DEFAULT_MODEL)]
     pub model: Model,

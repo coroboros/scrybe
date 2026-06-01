@@ -32,6 +32,22 @@ scrybe models list           # show the model family
 
 Run `scrybe --help` for the full flag list.
 
+## Codecs
+
+Decoded natively, no system `ffmpeg` required:
+
+| Extension | Codec |
+|-----------|-------|
+| `wav` | PCM |
+| `mp3` | MP3 |
+| `flac` | FLAC |
+| `ogg` / `oga` | Vorbis |
+| `m4a` / `mp4` / `m4b` | AAC-LC, ALAC |
+
+HE-AAC/SBR is not handled by the built-in decoder — it fails with exit code `10`
+rather than emit garbled audio. Re-encode with `ffmpeg`, or pass `--decoder ffmpeg`
+to decode through a system `ffmpeg` when one is on `PATH`.
+
 ## Models
 
 | Model | Notes |

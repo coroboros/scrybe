@@ -1,6 +1,7 @@
 //! scrybe entry point: parse the CLI, set up color, dispatch, and translate any
 //! failure into its stable exit code.
 
+mod audio;
 mod cli;
 mod color;
 mod error;
@@ -55,7 +56,55 @@ fn transcribe(cli: &Cli) -> Result<i32, ScrybeError> {
         }
     }
 
+    let files = audio::discover(&cli.paths, cli.recursive);
     print_plan(cli);
+
+    if files.is_empty() {
+        anstream::eprintln!(
+            "{}",
+            color::paint(color::WARN, "no audio files found in the given paths.")
+        );
+        return Ok(0);
+    }
+
+    if cli.dry_run {
+        for file in &files {
+            anstream::println!(
+                "  {}  {}",
+                file.display(),
+                color::paint(color::DIM, "(dry-run)")
+            );
+        }
+        return Ok(0);
+    }
+
+    // Fail-fast on the first decode error; batch resilience (continue + exit 20)
+    // arrives with the orchestrator.
+    for file in &files {
+        let pcm = audio::load_audio(file, cli.decoder)?;
+        anstream::println!(
+            "  {}  {}",
+            file.display(),
+            color::paint(
+                color::DIM,
+                &format!(
+                    "{:.1}s · {} Hz {} ch → 16 kHz mono ({} samples)",
+                    pcm.duration_secs(),
+                    pcm.source_sample_rate,
+                    pcm.source_channels,
+                    pcm.samples.len()
+                )
+            )
+        );
+    }
+
+    anstream::eprintln!(
+        "{}",
+        color::paint(
+            color::WARN,
+            "transcription engine is not wired yet — decode + resample verified above."
+        )
+    );
     Ok(0)
 }
 
@@ -99,7 +148,7 @@ fn print_plan(cli: &Cli) {
         .map_or_else(|| "sidecar".to_owned(), |dir| dir.display().to_string());
 
     let config = format!(
-        "model={} task={} lang={} format={} jobs={} threads={} out-dir={} decoder={} force={} json={} dry-run={}",
+        "model={} task={} lang={} format={} jobs={} threads={} out-dir={} decoder={} recursive={} force={} json={} dry-run={}",
         cli.model,
         cli.task,
         lang,
@@ -108,6 +157,7 @@ fn print_plan(cli: &Cli) {
         optional(&cli.threads),
         out_dir,
         cli.decoder,
+        cli.recursive,
         cli.force,
         cli.json,
         cli.dry_run,
@@ -117,19 +167,6 @@ fn print_plan(cli: &Cli) {
         color::paint(color::ACCENT, "scrybe"),
         color::paint(color::DIM, &config),
     );
-    for path in &cli.paths {
-        anstream::println!("  {}", path.display());
-    }
-
-    if !cli.dry_run {
-        anstream::eprintln!(
-            "{}",
-            color::paint(
-                color::WARN,
-                "transcription engine is not wired yet — this build resolves inputs and prints the plan.",
-            ),
-        );
-    }
 }
 
 fn print_error(err: &ScrybeError) {

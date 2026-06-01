@@ -20,7 +20,10 @@ path = "src/main.rs"
 [dependencies]
 anstream = "1.0.0"
 anstyle = "1.0.14"
+audioadapter-buffers = "3.0.0"
 clap = { version = "4.6.1", features = ["derive"] }
+rubato = "3.0.0"
+symphonia = { version = "0.6.0", features = ["mp3", "aac", "alac", "isomp4", "ogg", "vorbis", "flac", "wav", "pcm"] }
 
 [dev-dependencies]
 assert_cmd = "2.2.2"
