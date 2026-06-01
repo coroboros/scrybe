@@ -109,7 +109,9 @@ pub fn run(engine: &Engine, files: &[PathBuf], cfg: &Config<'_>) -> Result<i32, 
             detail: e.to_string(),
         })?;
 
-    let (tx, rx) = sync_channel::<(usize, PathBuf, DecodeMsg)>(cfg.jobs);
+    // The index identifies the file; the consumer borrows `files[index]`, so no
+    // path is cloned through the channel.
+    let (tx, rx) = sync_channel::<(usize, DecodeMsg)>(cfg.jobs);
     let mut results: Vec<Option<FileResult>> = (0..files.len()).map(|_| None).collect();
 
     std::thread::scope(|scope| {
@@ -131,16 +133,17 @@ pub fn run(engine: &Engine, files: &[PathBuf], cfg: &Config<'_>) -> Result<i32, 
                             Err(e) => DecodeMsg::Failed(e),
                         }
                     };
-                    let _ = tx.send((index, file.clone(), msg));
+                    let _ = tx.send((index, msg));
                 });
             });
         });
 
         // Consumer: serial inference + write.
-        for (index, file, decoded) in rx {
+        for (index, decoded) in rx {
             if interrupted.load(Ordering::SeqCst) {
                 break;
             }
+            let file = &files[index];
             let name = file.file_name().map_or_else(
                 || file.display().to_string(),
                 |n| n.to_string_lossy().into_owned(),
@@ -154,7 +157,7 @@ pub fn run(engine: &Engine, files: &[PathBuf], cfg: &Config<'_>) -> Result<i32, 
             bar.enable_steady_tick(Duration::from_millis(120));
 
             let started = Instant::now();
-            let (duration, outcome) = transcribe_one(engine, &file, decoded, cfg, &bar);
+            let (duration, outcome) = transcribe_one(engine, file, decoded, cfg, &bar);
             bar.finish_and_clear();
             aggregate.inc(1);
 
@@ -170,7 +173,17 @@ pub fn run(engine: &Engine, files: &[PathBuf], cfg: &Config<'_>) -> Result<i32, 
 
     let interrupted = interrupted.load(Ordering::SeqCst);
     print_summary(&results, interrupted);
+    batch_exit_code(&results, interrupted, files.len())
+}
 
+/// Decide the run's exit result from the per-file outcomes: partial failure when
+/// any file failed, a distinct interrupted result when Ctrl-C stopped the run
+/// before every file ran, otherwise success.
+fn batch_exit_code(
+    results: &[Option<FileResult>],
+    interrupted: bool,
+    total: usize,
+) -> Result<i32, ScrybeError> {
     let processed = results.iter().flatten().count();
     let failed = results
         .iter()
@@ -182,11 +195,10 @@ pub fn run(engine: &Engine, files: &[PathBuf], cfg: &Config<'_>) -> Result<i32, 
             failed,
             total: processed,
         })
-    } else if interrupted && processed < files.len() {
-        // Ctrl-C stopped the run early; the exit code must reflect partial work.
-        Err(ScrybeError::PartialBatchFailure {
-            failed: files.len() - processed,
-            total: files.len(),
+    } else if interrupted && processed < total {
+        Err(ScrybeError::Interrupted {
+            completed: processed,
+            total,
         })
     } else {
         Ok(0)
@@ -317,5 +329,63 @@ mod tests {
     fn cpu_jobs_default_and_override() {
         assert!(resolve_jobs(None, Backend::Cpu).0 >= 1);
         assert_eq!(resolve_jobs(Some(3), Backend::Cpu).0, 3);
+    }
+
+    fn result(outcome: Outcome) -> Option<FileResult> {
+        Some(FileResult {
+            name: "f".to_owned(),
+            duration: 0.0,
+            wall: 0.0,
+            outcome,
+        })
+    }
+
+    #[test]
+    fn exit_code_partial_failure_is_20() {
+        let results = [
+            result(Outcome::Done {
+                outputs: vec![],
+                language: "en".to_owned(),
+            }),
+            result(Outcome::Failed("bad".to_owned())),
+        ];
+        assert!(matches!(
+            batch_exit_code(&results, false, 2),
+            Err(ScrybeError::PartialBatchFailure {
+                failed: 1,
+                total: 2
+            })
+        ));
+    }
+
+    #[test]
+    fn exit_code_all_done_is_zero() {
+        let results = [
+            result(Outcome::Done {
+                outputs: vec![],
+                language: "en".to_owned(),
+            }),
+            result(Outcome::Skipped),
+        ];
+        assert!(matches!(batch_exit_code(&results, false, 2), Ok(0)));
+    }
+
+    #[test]
+    fn exit_code_interrupted_partial_is_distinct() {
+        // One file done, one never processed, run interrupted.
+        let results = [
+            result(Outcome::Done {
+                outputs: vec![],
+                language: "en".to_owned(),
+            }),
+            None,
+        ];
+        assert!(matches!(
+            batch_exit_code(&results, true, 2),
+            Err(ScrybeError::Interrupted {
+                completed: 1,
+                total: 2
+            })
+        ));
     }
 }

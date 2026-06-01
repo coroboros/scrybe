@@ -85,7 +85,8 @@ to decode through a system `ffmpeg` when one is on `PATH`.
 | `12` | out of memory |
 | `13` | GPU init failed |
 | `14` | file not found |
-| `20` | partial batch failure |
+| `15` | model load failed (corrupt or incompatible ggml) |
+| `20` | partial batch failure, or interrupted before completion |
 
 ## License
 

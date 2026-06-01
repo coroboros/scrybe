@@ -58,3 +58,17 @@ fn models_path_points_at_hub_cache() {
         .success()
         .stdout(predicate::str::contains("huggingface"));
 }
+
+#[test]
+fn offline_without_cache_exits_11() {
+    // An empty HF_HOME forces a cache miss; --offline must error with exit 11 and
+    // make no network call (the offline branch never touches the API).
+    let empty_cache = tempfile::tempdir().unwrap();
+    scrybe()
+        .env("HF_HOME", empty_cache.path())
+        .args(["--offline", "--model", "tiny", WAV])
+        .assert()
+        .failure()
+        .code(11)
+        .stderr(predicate::str::contains("--offline"));
+}

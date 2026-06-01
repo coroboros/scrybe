@@ -53,6 +53,7 @@ pub const fn active_backend() -> Backend {
 }
 
 /// One transcript segment with its timing.
+#[derive(Debug, Clone)]
 pub struct Segment {
     pub start: f64,
     pub end: f64,
@@ -60,6 +61,7 @@ pub struct Segment {
 }
 
 /// A finished transcript plus the language that was used or detected.
+#[derive(Debug, Clone)]
 pub struct Transcript {
     pub segments: Vec<Segment>,
     pub language: String,
@@ -112,7 +114,8 @@ impl Engine {
             .map_err(|e| run_error(e.to_string()))?;
 
         let mut params = FullParams::new(SamplingStrategy::Greedy { best_of: 1 });
-        params.set_n_threads(opts.threads.max(1) as i32);
+        // Clamp before the narrowing cast so a huge --threads can't wrap negative.
+        params.set_n_threads(opts.threads.clamp(1, i32::MAX as usize) as i32);
         params.set_translate(opts.translate);
         // condition_on_previous_text = false: the single most effective guard
         // against repetition loops on long audio.

@@ -9,9 +9,16 @@
 
 use assert_cmd::Command;
 use predicates::prelude::*;
+use scrybe::cli::Model;
 
 /// ANSI escape introducer — its presence means color was emitted.
 const ESC: &str = "\u{1b}";
+
+/// The transcription tests need the tiny model; skip cleanly when it is absent
+/// (CI fetches it once), mirroring the golden test.
+fn tiny_cached() -> bool {
+    scrybe::model::cached_path(Model::Tiny).is_some()
+}
 
 /// A binary invocation with ambient color env neutralized, so a test only sees
 /// the color signal it sets itself.
@@ -111,6 +118,44 @@ fn missing_input_path_exits_file_not_found() {
         .failure()
         .code(14)
         .stderr(predicate::str::contains("no such file"));
+}
+
+#[test]
+fn json_single_file_streams_clean_stdout() {
+    if !tiny_cached() {
+        eprintln!("skipping: tiny model not cached");
+        return;
+    }
+    // stdout must be only the JSON document — the status banner goes to stderr.
+    scrybe()
+        .args(["--model", "tiny", "--json", "tests/fixtures/speech/en.wav"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("\"schema_version\": 1"))
+        .stdout(predicate::str::contains("model=").not());
+}
+
+#[test]
+fn out_dir_redirects_output_away_from_input() {
+    if !tiny_cached() {
+        eprintln!("skipping: tiny model not cached");
+        return;
+    }
+    let out = tempfile::tempdir().unwrap();
+    scrybe()
+        .args(["--model", "tiny", "--format", "txt", "--out-dir"])
+        .arg(out.path())
+        .arg("tests/fixtures/speech/en.wav")
+        .assert()
+        .success();
+    assert!(
+        out.path().join("en.txt").exists(),
+        "output should land in --out-dir"
+    );
+    assert!(
+        !std::path::Path::new("tests/fixtures/speech/en.txt").exists(),
+        "output must not be written beside the input",
+    );
 }
 
 #[test]

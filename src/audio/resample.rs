@@ -78,4 +78,21 @@ mod tests {
             input
         );
     }
+
+    #[test]
+    fn preserves_tone_frequency() {
+        // One second of a 1 kHz tone at 48 kHz → 16 kHz: the frequency (≈1000
+        // positive-going zero crossings) must survive, not just the length.
+        let src_rate = 48_000u32;
+        let freq = 1000.0f32;
+        let input: Vec<f32> = (0..src_rate)
+            .map(|n| (2.0 * std::f32::consts::PI * freq * n as f32 / src_rate as f32).sin())
+            .collect();
+        let out = to_16k_mono(input, src_rate).unwrap();
+        let cycles = out.windows(2).filter(|w| w[0] <= 0.0 && w[1] > 0.0).count();
+        assert!(
+            (900..=1100).contains(&cycles),
+            "expected ~1000 cycles, got {cycles}"
+        );
+    }
 }

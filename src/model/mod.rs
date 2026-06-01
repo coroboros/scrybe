@@ -205,7 +205,7 @@ fn fetch_verified(
     if offline {
         let path = cached(repo, file)
             .ok_or_else(|| dl_error("not in cache and `--offline` is set".to_owned()))?;
-        if sha256_matches(&path, sha256)? {
+        if sha256_matches(&path, sha256, label)? {
             return Ok(path);
         }
         return Err(dl_error(
@@ -221,14 +221,14 @@ fn fetch_verified(
     let repo_api = api.model(repo.to_owned());
 
     let path = repo_api.get(file).map_err(|e| dl_error(e.to_string()))?;
-    if sha256_matches(&path, sha256)? {
+    if sha256_matches(&path, sha256, label)? {
         return Ok(path);
     }
 
     // Corrupt download: drop the blob and fetch once more.
     evict(&path);
     let path = repo_api.get(file).map_err(|e| dl_error(e.to_string()))?;
-    if sha256_matches(&path, sha256)? {
+    if sha256_matches(&path, sha256, label)? {
         return Ok(path);
     }
     Err(dl_error("checksum mismatch after re-download".to_owned()))
@@ -242,20 +242,20 @@ pub fn evict(path: &std::path::Path) {
     let _ = std::fs::remove_file(path);
 }
 
-fn sha256_matches(path: &std::path::Path, expected: &str) -> Result<bool, ScrybeError> {
-    let mut file = std::fs::File::open(path).map_err(|e| ScrybeError::ModelDownloadFailed {
-        model: path.display().to_string(),
-        detail: e.to_string(),
-    })?;
+fn sha256_matches(
+    path: &std::path::Path,
+    expected: &str,
+    label: &str,
+) -> Result<bool, ScrybeError> {
+    let io_error = |e: std::io::Error| ScrybeError::ModelDownloadFailed {
+        model: label.to_owned(),
+        detail: format!("{}: {e}", path.display()),
+    };
+    let mut file = std::fs::File::open(path).map_err(&io_error)?;
     let mut hasher = Sha256::new();
     let mut buf = vec![0u8; 1 << 16];
     loop {
-        let read = file
-            .read(&mut buf)
-            .map_err(|e| ScrybeError::ModelDownloadFailed {
-                model: path.display().to_string(),
-                detail: e.to_string(),
-            })?;
+        let read = file.read(&mut buf).map_err(&io_error)?;
         if read == 0 {
             break;
         }

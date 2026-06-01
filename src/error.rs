@@ -26,6 +26,8 @@ pub enum ScrybeError {
     FileNotFound { path: PathBuf },
     /// Some files in a batch failed while others succeeded.
     PartialBatchFailure { failed: usize, total: usize },
+    /// The run was stopped early (Ctrl-C) before every file was processed.
+    Interrupted { completed: usize, total: usize },
     /// An unexpected I/O failure, such as writing an output file.
     Io { detail: String },
 }
@@ -48,7 +50,7 @@ impl ScrybeError {
             Self::GpuInitFailed { .. } => 13,
             Self::FileNotFound { .. } => 14,
             Self::ModelLoadFailed { .. } => 15,
-            Self::PartialBatchFailure { .. } => 20,
+            Self::PartialBatchFailure { .. } | Self::Interrupted { .. } => 20,
             Self::Io { .. } => 1,
         }
     }
@@ -87,6 +89,10 @@ impl fmt::Display for ScrybeError {
                 f,
                 "{failed} of {total} files failed; the rest completed. See the per-file lines above.",
             ),
+            Self::Interrupted { completed, total } => write!(
+                f,
+                "interrupted: {completed} of {total} files processed before stopping; no files were lost.",
+            ),
             Self::Io { detail } => write!(f, "I/O error: {detail}"),
         }
     }
@@ -100,7 +106,7 @@ mod tests {
 
     #[test]
     fn exit_codes_match_the_documented_contract() {
-        let cases: [(ScrybeError, i32); 8] = [
+        let cases: [(ScrybeError, i32); 9] = [
             (
                 ScrybeError::Io {
                     detail: String::new(),
@@ -149,6 +155,13 @@ mod tests {
             (
                 ScrybeError::PartialBatchFailure {
                     failed: 1,
+                    total: 2,
+                },
+                20,
+            ),
+            (
+                ScrybeError::Interrupted {
+                    completed: 1,
                     total: 2,
                 },
                 20,

@@ -18,6 +18,14 @@ use symphonia::core::meta::MetadataOptions;
 use super::TARGET_SAMPLE_RATE;
 use crate::error::ScrybeError;
 
+/// Bytes per decoded f32 sample.
+const SAMPLE_BYTES: u64 = 4;
+
+/// Ceiling on a source's raw decoded PCM. Beyond this, the whole-file decode
+/// would risk exhausting memory before the resample frees it; we fail loud
+/// instead. Long/high-rate inputs should use `--jobs 1` or be pre-converted.
+const MAX_SOURCE_PCM_BYTES: u64 = 2 * 1024 * 1024 * 1024;
+
 /// Interleaved f32 PCM plus the source stream's rate and channel count.
 pub struct Decoded {
     pub samples: Vec<f32>,
@@ -51,6 +59,7 @@ pub fn decode_file(path: &Path) -> Result<Decoded, ScrybeError> {
         .default_track(TrackType::Audio)
         .ok_or_else(|| unsupported("no audio track found".to_owned()))?;
     let track_id = track.id;
+    let source_frames = track.num_frames;
 
     let audio_params = track
         .codec_params
@@ -66,6 +75,20 @@ pub fn decode_file(path: &Path) -> Result<Decoded, ScrybeError> {
         .as_ref()
         .map_or(1, |ch| ch.count() as u16)
         .max(1);
+
+    // Reject sources whose raw PCM would exhaust memory before the resample frees
+    // it (the memory guard models the post-resample buffer, not this transient).
+    if let Some(frames) = source_frames {
+        let bytes = frames
+            .saturating_mul(u64::from(channels))
+            .saturating_mul(SAMPLE_BYTES);
+        if bytes > MAX_SOURCE_PCM_BYTES {
+            return Err(unsupported(format!(
+                "audio is too large to decode in memory (~{:.1} GB raw); use `--jobs 1`, a shorter clip, or `--decoder ffmpeg`",
+                bytes as f64 / 1024.0 / 1024.0 / 1024.0,
+            )));
+        }
+    }
 
     if let Some(extra) = audio_params.extra_data.as_deref()
         && is_he_aac_asc(extra)
@@ -207,8 +230,10 @@ fn is_he_aac_asc(asc: &[u8]) -> bool {
         Some(_) => {}
         None => return false,
     }
+    // The SBR sync extension + extension object type span 16 bits, so the last
+    // valid start is `bits - 16` (inclusive). Reads past the end return None.
     let bits = asc.len() * 8;
-    for start in 0..bits.saturating_sub(16) {
+    for start in 0..=bits.saturating_sub(16) {
         let mut reader = BitReader::at(asc, start);
         if reader.read(11) == Some(SBR_SYNC_EXTENSION)
             && matches!(read_object_type(&mut reader), Some(5 | 29))
@@ -236,6 +261,13 @@ mod tests {
     fn detects_backward_compatible_sbr() {
         // Real Apple HE-AAC ASC: base AOT 2 + 0x2B7 sync extension + ext AOT 5.
         assert!(is_he_aac_asc(&[0x14, 0x10, 0x56, 0xe5, 0xa8]));
+    }
+
+    #[test]
+    fn detects_sbr_in_the_final_16_bits() {
+        // 0x2B7 sync + ext object type 5 occupying exactly the last 16 bits —
+        // regression for the scan's upper bound (previously exclusive, so missed).
+        assert!(is_he_aac_asc(&[0x12, 0x10, 0x56, 0xe5]));
     }
 
     #[test]
