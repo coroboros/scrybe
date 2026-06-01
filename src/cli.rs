@@ -81,14 +81,22 @@ pub struct Cli {
 
 impl Cli {
     /// The formats a run will actually write. `--json` forces JSON output,
-    /// overriding `--format`. Single source for the policy so the plan banner, the
-    /// collision check, and the writers all agree.
+    /// overriding `--format`. De-duplicated (order-preserving) so `--format txt,txt`
+    /// doesn't write the same file twice. Single source for the policy so the plan
+    /// banner, the collision check, and the writers all agree.
     pub fn effective_formats(&self) -> Vec<Format> {
-        if self.json {
+        let requested = if self.json {
             vec![Format::Json]
         } else {
             self.format.clone()
+        };
+        let mut unique = Vec::with_capacity(requested.len());
+        for format in requested {
+            if !unique.contains(&format) {
+                unique.push(format);
+            }
         }
+        unique
     }
 }
 
@@ -181,6 +189,15 @@ display_via_value_enum!(Model, Task, Format, Decoder);
 mod tests {
     #![allow(clippy::unwrap_used)]
     use super::*;
+
+    #[test]
+    fn effective_formats_dedups_preserving_order() {
+        let cli = Cli::try_parse_from(["scrybe", "--format", "txt,srt,txt", "x.wav"]).unwrap();
+        assert_eq!(cli.effective_formats(), vec![Format::Txt, Format::Srt]);
+        // --json overrides --format entirely.
+        let json = Cli::try_parse_from(["scrybe", "--json", "--format", "srt", "x.wav"]).unwrap();
+        assert_eq!(json.effective_formats(), vec![Format::Json]);
+    }
 
     #[test]
     fn model_display_round_trips_through_value_enum() {
