@@ -5,7 +5,7 @@ use clap::{Parser, ValueEnum};
 
 use scrybe::cli::{self, Cli, Command, Model, ModelsAction, Task};
 use scrybe::error::ScrybeError;
-use scrybe::{audio, color, engine, model};
+use scrybe::{audio, color, engine, model, output};
 
 /// Exit code for argument/usage problems, matching clap's own convention.
 const USAGE_ERROR: i32 = 2;
@@ -97,33 +97,43 @@ fn transcribe(cli: &Cli) -> Result<i32, ScrybeError> {
         threads: cli.threads.unwrap_or_else(default_threads),
     };
 
+    // `--json` on a single file streams to stdout for piping; otherwise transcripts
+    // are written as sidecar files (or into `--out-dir`).
+    let json_stdout = cli.json && files.len() == 1;
+    let formats: Vec<cli::Format> = if cli.json {
+        vec![cli::Format::Json]
+    } else {
+        cli.format.clone()
+    };
+    let model_name = cli.model.to_string();
+
     // Fail-fast on the first error; batch resilience (continue + exit 20) arrives
     // with the orchestrator.
     for file in &files {
         let pcm = audio::load_audio(file, cli.decoder)?;
         let transcript = engine.transcribe(&pcm.samples, &options)?;
-        anstream::println!(
-            "  {} {}",
-            file.display(),
-            color::paint(
-                color::DIM,
-                &format!(
-                    "[{}] {:.1}s · {} Hz {} ch",
-                    transcript.language,
-                    pcm.duration_secs(),
-                    pcm.source_sample_rate,
-                    pcm.source_channels,
-                ),
-            ),
-        );
-        for segment in &transcript.segments {
-            anstream::println!(
-                "  {} {}",
+        let meta = output::Meta {
+            model: &model_name,
+            duration: pcm.duration_secs(),
+        };
+        if json_stdout {
+            anstream::println!("{}", output::render(&transcript, cli::Format::Json, &meta));
+        } else {
+            let written =
+                output::write_outputs(&transcript, file, &formats, cli.out_dir.as_deref(), &meta)?;
+            let paths = written
+                .iter()
+                .map(|p| p.display().to_string())
+                .collect::<Vec<_>>()
+                .join(", ");
+            anstream::eprintln!(
+                "  {} {} → {}",
+                file.display(),
                 color::paint(
                     color::DIM,
-                    &format!("[{:>6.1} → {:>6.1}]", segment.start, segment.end),
+                    &format!("[{}] {:.1}s", transcript.language, pcm.duration_secs()),
                 ),
-                segment.text,
+                color::paint(color::SUCCESS, &paths),
             );
         }
     }
@@ -255,7 +265,8 @@ fn print_plan(cli: &Cli) {
         cli.offline,
         cli.dry_run,
     );
-    anstream::println!(
+    // Status banner on stderr, keeping stdout clean for `--json` piping.
+    anstream::eprintln!(
         "{}  {}",
         color::paint(color::ACCENT, "scrybe"),
         color::paint(color::DIM, &config),

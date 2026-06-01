@@ -27,6 +27,8 @@ pub enum ScrybeError {
     FileNotFound { path: PathBuf },
     /// Some files in a batch failed while others succeeded.
     PartialBatchFailure { failed: usize, total: usize },
+    /// An unexpected I/O failure, such as writing an output file.
+    Io { detail: String },
 }
 
 impl ScrybeError {
@@ -39,6 +41,7 @@ impl ScrybeError {
             Self::GpuInitFailed { .. } => 13,
             Self::FileNotFound { .. } => 14,
             Self::PartialBatchFailure { .. } => 20,
+            Self::Io { .. } => 1,
         }
     }
 }
@@ -71,6 +74,7 @@ impl fmt::Display for ScrybeError {
                 f,
                 "{failed} of {total} files failed; the rest completed. See the per-file lines above.",
             ),
+            Self::Io { detail } => write!(f, "I/O error: {detail}"),
         }
     }
 }

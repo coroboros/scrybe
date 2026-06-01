@@ -1542,6 +1542,8 @@ dependencies = [
  "hf-hub",
  "predicates",
  "rubato",
+ "serde",
+ "serde_json",
  "sha2",
  "symphonia",
  "sysinfo",

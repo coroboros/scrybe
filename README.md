@@ -66,6 +66,7 @@ to decode through a system `ffmpeg` when one is on `PATH`.
 | Code | Meaning |
 |------|---------|
 | `0` | success |
+| `1` | unexpected error (e.g. failed to write output) |
 | `2` | usage error (bad flag or value) |
 | `10` | unsupported codec |
 | `11` | model download failed |
