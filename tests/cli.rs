@@ -235,6 +235,12 @@ fn mixed_batch_reports_failure_and_exits_20() {
         out.path().join("en.txt").exists(),
         "the good file should still be written"
     );
+    // ...and the failed file writes nothing — the "fail loud, never silent/garbled"
+    // guarantee: a decode failure must not leave a truncated/empty sidecar.
+    assert!(
+        !out.path().join("he-aac.txt").exists(),
+        "a failed file must write no output"
+    );
 }
 
 #[test]

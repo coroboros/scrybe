@@ -10,6 +10,16 @@ use super::TARGET_SAMPLE_RATE;
 /// out as a flat (interleaved-by-1) buffer. Errors are returned as a message; the
 /// caller attaches the path.
 pub fn to_16k_mono(mono: Vec<f32>, src_rate: u32) -> Result<Vec<f32>, String> {
+    to_16k_mono_capped(mono, src_rate, crate::model::DECODE_BUFFER)
+}
+
+/// `to_16k_mono` with an injectable output-byte ceiling, so the overflow Err arm is
+/// testable with a tiny ceiling instead of a multi-GB allocation.
+fn to_16k_mono_capped(
+    mono: Vec<f32>,
+    src_rate: u32,
+    ceiling_bytes: u64,
+) -> Result<Vec<f32>, String> {
     if src_rate == TARGET_SAMPLE_RATE {
         return Ok(mono);
     }
@@ -44,7 +54,7 @@ pub fn to_16k_mono(mono: Vec<f32>, src_rate: u32) -> Result<Vec<f32>, String> {
     // A low source rate upsamples a modest raw buffer into a much larger output;
     // bound it before the allocation so a crafted rate can't force a multi-GB alloc
     // the raw-PCM ceiling alone doesn't catch.
-    if resample_output_too_large(out_capacity) {
+    if resample_output_too_large(out_capacity, ceiling_bytes) {
         return Err(fail(
             "resampled output exceeds the in-memory limit; use a shorter clip or `--decoder ffmpeg`"
                 .to_owned(),
@@ -61,12 +71,12 @@ pub fn to_16k_mono(mono: Vec<f32>, src_rate: u32) -> Result<Vec<f32>, String> {
     Ok(out)
 }
 
-/// Whether a resample would allocate an output buffer beyond the per-job decode
-/// budget — the binding constraint when upsampling (output larger than the raw
-/// input the decode ceiling bounds).
-fn resample_output_too_large(out_frames: usize) -> bool {
+/// Whether a resample would allocate an output buffer beyond `ceiling_bytes` — the
+/// binding constraint when upsampling (output larger than the raw input the decode
+/// ceiling bounds).
+fn resample_output_too_large(out_frames: usize, ceiling_bytes: u64) -> bool {
     const F32_BYTES: u64 = 4;
-    (out_frames as u64).saturating_mul(F32_BYTES) > crate::model::DECODE_BUFFER
+    (out_frames as u64).saturating_mul(F32_BYTES) > ceiling_bytes
 }
 
 #[cfg(test)]
@@ -111,10 +121,20 @@ mod tests {
 
     #[test]
     fn resample_output_ceiling_bounds_upsample_alloc() {
-        assert!(!resample_output_too_large(1_000_000)); // ~4 MB, fine
-        let over = (crate::model::DECODE_BUFFER / 4) as usize + 1;
-        assert!(resample_output_too_large(over));
-        assert!(resample_output_too_large(usize::MAX)); // saturates, never wraps
+        assert!(!resample_output_too_large(10, 1000)); // 40 bytes ≤ 1000
+        assert!(resample_output_too_large(1000, 1000)); // 4000 > 1000
+        assert!(resample_output_too_large(usize::MAX, 1000)); // saturates, never wraps
+    }
+
+    #[test]
+    fn upsample_exceeding_ceiling_fails_loud() {
+        // A small 8 kHz input upsamples to ~2x; a tiny ceiling makes the Err arm fire
+        // before any large allocation, carrying the actionable message.
+        let err = to_16k_mono_capped(vec![0.1f32; 100], 8_000, 256).unwrap_err();
+        assert!(
+            err.contains("in-memory limit") || err.contains("--decoder ffmpeg"),
+            "got: {err}"
+        );
     }
 
     #[test]
