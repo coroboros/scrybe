@@ -563,6 +563,37 @@ fn decoder_ffmpeg_wires_through_the_binary() {
 }
 
 #[test]
+fn vtt_and_tsv_formats_write_well_formed_sidecars() {
+    if !tiny_cached() {
+        eprintln!("skipping: tiny model not cached");
+        return;
+    }
+    // The two WS-6 writers with no end-to-end coverage: drive them through
+    // clap → effective_formats → write_outputs and check the files parse.
+    let out = tempfile::tempdir().unwrap();
+    scrybe()
+        .args(["--model", "tiny", "--format", "vtt,tsv", "--out-dir"])
+        .arg(out.path())
+        .arg("tests/fixtures/speech/en.wav")
+        .assert()
+        .success();
+    let vtt = std::fs::read_to_string(out.path().join("en.vtt")).expect("en.vtt written");
+    assert!(vtt.starts_with("WEBVTT"), "vtt header missing:\n{vtt}");
+    assert!(vtt.contains("-->"), "vtt has no cue:\n{vtt}");
+    let tsv = std::fs::read_to_string(out.path().join("en.tsv")).expect("en.tsv written");
+    assert!(
+        tsv.starts_with("start\tend\ttext\n"),
+        "tsv header missing:\n{tsv}"
+    );
+    assert!(
+        tsv.lines()
+            .nth(1)
+            .is_some_and(|row| row.matches('\t').count() == 2),
+        "tsv has no tab-separated data row:\n{tsv}"
+    );
+}
+
+#[test]
 fn no_input_paths_exits_usage_error() {
     scrybe()
         .assert()
