@@ -5,7 +5,7 @@ use clap::{Parser, ValueEnum};
 
 use scrybe::cli::{self, Cli, Command, Model, ModelsAction, Task};
 use scrybe::error::ScrybeError;
-use scrybe::{audio, color, engine, model, output};
+use scrybe::{audio, batch, color, engine, model, output};
 
 /// Exit code for argument/usage problems, matching clap's own convention.
 const USAGE_ERROR: i32 = 2;
@@ -83,61 +83,55 @@ fn transcribe(cli: &Cli) -> Result<i32, ScrybeError> {
 
     let model_path = model::ensure_available(cli.model, cli.offline)?;
     let engine = engine::Engine::load(&model_path)?;
-    anstream::eprintln!(
-        "{}",
-        color::paint(
-            color::DIM,
-            &format!("backend {} · model {}", engine::active_backend(), cli.model),
-        )
-    );
 
     let options = engine::TranscribeOptions {
         language: cli.lang.clone(),
         translate: cli.task == Task::Translate,
         threads: cli.threads.unwrap_or_else(default_threads),
     };
-
-    // `--json` on a single file streams to stdout for piping; otherwise transcripts
-    // are written as sidecar files (or into `--out-dir`).
-    let json_stdout = cli.json && files.len() == 1;
-    let formats: Vec<cli::Format> = if cli.json {
-        vec![cli::Format::Json]
-    } else {
-        cli.format.clone()
-    };
     let model_name = cli.model.to_string();
 
-    // Fail-fast on the first error; batch resilience (continue + exit 20) arrives
-    // with the orchestrator.
-    for file in &files {
+    // `--json` on a single file streams to stdout for piping; no batch UI.
+    if cli.json && files.len() == 1 {
+        let file = &files[0];
         let pcm = audio::load_audio(file, cli.decoder)?;
         let transcript = engine.transcribe(&pcm.samples, &options)?;
         let meta = output::Meta {
             model: &model_name,
             duration: pcm.duration_secs(),
         };
-        if json_stdout {
-            anstream::println!("{}", output::render(&transcript, cli::Format::Json, &meta));
-        } else {
-            let written =
-                output::write_outputs(&transcript, file, &formats, cli.out_dir.as_deref(), &meta)?;
-            let paths = written
-                .iter()
-                .map(|p| p.display().to_string())
-                .collect::<Vec<_>>()
-                .join(", ");
-            anstream::eprintln!(
-                "  {} {} → {}",
-                file.display(),
-                color::paint(
-                    color::DIM,
-                    &format!("[{}] {:.1}s", transcript.language, pcm.duration_secs()),
-                ),
-                color::paint(color::SUCCESS, &paths),
-            );
-        }
+        anstream::println!("{}", output::render(&transcript, cli::Format::Json, &meta));
+        return Ok(0);
     }
-    Ok(0)
+
+    let backend = engine::active_backend();
+    let (jobs, clamp_note) = batch::resolve_jobs(cli.jobs, backend);
+    anstream::eprintln!(
+        "{}",
+        color::paint(
+            color::DIM,
+            &format!("backend {backend} · model {} · {jobs} job(s)", cli.model),
+        )
+    );
+    if let Some(note) = clamp_note {
+        anstream::eprintln!("{}", color::paint(color::WARN, &note));
+    }
+
+    let formats: Vec<cli::Format> = if cli.json {
+        vec![cli::Format::Json]
+    } else {
+        cli.format.clone()
+    };
+    let config = batch::Config {
+        decoder: cli.decoder,
+        options,
+        formats: &formats,
+        out_dir: cli.out_dir.as_deref(),
+        model: &model_name,
+        force: cli.force,
+        jobs,
+    };
+    batch::run(&engine, &files, &config)
 }
 
 /// Default decode threads: the machine's parallelism, or 4 when unknown.

@@ -3,6 +3,7 @@
 //! these together; tests drive them directly.
 
 pub mod audio;
+pub mod batch;
 pub mod cli;
 pub mod color;
 pub mod engine;

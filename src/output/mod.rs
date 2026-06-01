@@ -51,6 +51,20 @@ pub fn write_outputs(
     Ok(written)
 }
 
+/// Whether every requested output for `input` already exists and is at least as
+/// new as the input — the signal to skip re-transcribing unless `--force`.
+pub fn outputs_up_to_date(input: &Path, formats: &[Format], out_dir: Option<&Path>) -> bool {
+    let Ok(input_mtime) = input.metadata().and_then(|m| m.modified()) else {
+        return false;
+    };
+    formats.iter().all(|&format| {
+        output_path(input, format, out_dir)
+            .metadata()
+            .and_then(|m| m.modified())
+            .is_ok_and(|out_mtime| out_mtime >= input_mtime)
+    })
+}
+
 /// The output path for one format: `<stem>.<ext>` in `out_dir` or beside the input.
 fn output_path(input: &Path, format: Format, out_dir: Option<&Path>) -> PathBuf {
     let stem = input.file_stem().unwrap_or(input.as_os_str());
