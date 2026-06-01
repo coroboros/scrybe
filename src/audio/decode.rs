@@ -265,7 +265,7 @@ pub fn decode_via_ffmpeg(path: &Path) -> Result<Decoded, ScrybeError> {
             }
         })?;
 
-    let Some(mut stdout) = child.stdout.take() else {
+    let (Some(mut stdout), Some(mut stderr)) = (child.stdout.take(), child.stderr.take()) else {
         let _ = child.kill();
         let _ = child.wait();
         return Err(unsupported("could not capture ffmpeg output".to_owned()));
@@ -274,10 +274,20 @@ pub fn decode_via_ffmpeg(path: &Path) -> Result<Decoded, ScrybeError> {
     // Stream stdout, decoding complete f32le samples as they arrive and bailing the
     // moment the running total would exceed the ceiling — so peak memory stays
     // bounded by `MAX_SOURCE_PCM_BYTES` like the symphonia path, instead of
-    // buffering the whole (possibly huge) stream first. `-v error` keeps stderr
-    // tiny, so draining stdout before reading it cannot deadlock. The byte loop is
-    // a pure, unit-tested helper; the child kill/wait stays here.
-    let samples = match read_f32le_stream(&mut stdout, MAX_SOURCE_SAMPLES) {
+    // buffering the whole (possibly huge) stream first. Drain stderr on a scoped
+    // thread concurrently: a corrupt input can emit more than the pipe buffer to
+    // stderr, and reading stdout first would otherwise deadlock waiting on a child
+    // blocked writing stderr. The byte loop is a pure, unit-tested helper.
+    let (decoded, errs) = std::thread::scope(|scope| {
+        let reader = scope.spawn(move || {
+            let mut buf = String::new();
+            let _ = stderr.read_to_string(&mut buf);
+            buf
+        });
+        let decoded = read_f32le_stream(&mut stdout, MAX_SOURCE_SAMPLES);
+        (decoded, reader.join().unwrap_or_default())
+    });
+    let samples = match decoded {
         Ok(samples) => samples,
         Err(StreamError::Overflow) => {
             let _ = child.kill();
@@ -298,11 +308,7 @@ pub fn decode_via_ffmpeg(path: &Path) -> Result<Decoded, ScrybeError> {
         .wait()
         .map_err(|e| unsupported(format!("waiting for ffmpeg failed: {e}")))?;
     if !status.success() {
-        let mut err = String::new();
-        if let Some(mut stderr) = child.stderr.take() {
-            let _ = stderr.read_to_string(&mut err);
-        }
-        return Err(unsupported(format!("ffmpeg failed: {}", err.trim())));
+        return Err(unsupported(format!("ffmpeg failed: {}", errs.trim())));
     }
     if samples.is_empty() {
         return Err(unsupported("ffmpeg produced no audio".to_owned()));

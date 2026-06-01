@@ -50,6 +50,56 @@ fn discovery_skips_non_audio() {
     assert_eq!(found.len(), 5, "discovered: {found:?}");
 }
 
+/// A minimal 16 kHz mono s16 WAV header declaring `data_size` PCM bytes, with no
+/// body. symphonia reads `num_frames` from the header before decoding, so a crafted
+/// size drives `decode_file`'s ceiling / empty-audio branches without a real fixture.
+fn wav_header(data_size: u32) -> Vec<u8> {
+    let (sample_rate, channels, bits) = (16_000u32, 1u16, 16u16);
+    let block_align = channels * bits / 8;
+    let byte_rate = sample_rate * u32::from(block_align);
+    let mut h = Vec::new();
+    h.extend_from_slice(b"RIFF");
+    h.extend_from_slice(&(36 + data_size).to_le_bytes());
+    h.extend_from_slice(b"WAVE");
+    h.extend_from_slice(b"fmt ");
+    h.extend_from_slice(&16u32.to_le_bytes());
+    h.extend_from_slice(&1u16.to_le_bytes()); // PCM
+    h.extend_from_slice(&channels.to_le_bytes());
+    h.extend_from_slice(&sample_rate.to_le_bytes());
+    h.extend_from_slice(&byte_rate.to_le_bytes());
+    h.extend_from_slice(&block_align.to_le_bytes());
+    h.extend_from_slice(&bits.to_le_bytes());
+    h.extend_from_slice(b"data");
+    h.extend_from_slice(&data_size.to_le_bytes());
+    h
+}
+
+#[test]
+fn oversized_declared_length_is_rejected_loud() {
+    // ~350M declared frames > the 1 GiB raw ceiling, but the file is header-only:
+    // decode_file's pre-decode ceiling check (on declared num_frames) must fire.
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("huge.wav");
+    std::fs::write(&path, wav_header(700_000_000)).unwrap();
+    let err = decode(path.to_str().unwrap(), Decoder::Symphonia).unwrap_err();
+    assert_eq!(err.exit_code(), 10);
+    assert!(err.to_string().contains("too large"), "got: {err}");
+}
+
+#[test]
+fn empty_audio_track_fails_loud() {
+    // Valid container, zero-length data → decode_file's empty-audio branch.
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("empty.wav");
+    std::fs::write(&path, wav_header(0)).unwrap();
+    let err = decode(path.to_str().unwrap(), Decoder::Symphonia).unwrap_err();
+    assert_eq!(err.exit_code(), 10);
+    assert!(
+        err.to_string().contains("no decodable audio") || err.to_string().contains("no audio"),
+        "got: {err}"
+    );
+}
+
 #[test]
 fn he_aac_fails_loud_with_exit_10() {
     let err = decode("tests/fixtures/aac/he-aac.m4a", Decoder::Symphonia).unwrap_err();
