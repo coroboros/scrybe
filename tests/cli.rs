@@ -664,6 +664,26 @@ fn models_remove_uncached_reports_not_cached() {
 }
 
 #[test]
+fn models_remove_evicts_a_cached_model() {
+    // Seed a cached snapshot (remove doesn't SHA-verify, so any bytes trigger the
+    // evict arm), then assert `models remove` reports "removed" and deletes it.
+    let hf = tempfile::tempdir().unwrap();
+    let repo = hf.path().join("hub/models--ggerganov--whisper.cpp");
+    std::fs::create_dir_all(repo.join("refs")).unwrap();
+    std::fs::create_dir_all(repo.join("snapshots/rev")).unwrap();
+    std::fs::write(repo.join("refs/main"), b"rev").unwrap();
+    let snapshot = repo.join("snapshots/rev/ggml-tiny.bin");
+    std::fs::write(&snapshot, b"cached bytes").unwrap();
+    scrybe()
+        .env("HF_HOME", hf.path())
+        .args(["models", "remove", "tiny"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("removed"));
+    assert!(!snapshot.exists(), "remove must evict the cached snapshot");
+}
+
+#[test]
 fn models_list_shows_every_model() {
     scrybe()
         .args(["models", "list"])

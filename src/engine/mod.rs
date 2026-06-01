@@ -151,12 +151,7 @@ impl Engine {
             params.enable_vad(true);
         }
 
-        // whisper.cpp matches language codes case-sensitively against lowercase ISO
-        // keys, but the capability gate accepts them case-insensitively. Normalize
-        // here so an accepted `--lang EN`/`AUTO` isn't silently rejected by whisper
-        // (which would collapse the transcript). All valid codes are lowercase, so
-        // lowercasing can't corrupt a real one.
-        let normalized = opts.language.as_deref().map(str::to_ascii_lowercase);
+        let normalized = normalize_language(opts.language.as_deref());
         let language = normalized.as_deref().unwrap_or("auto");
         params.set_language(Some(language));
         params.set_progress_callback_safe(progress);
@@ -218,6 +213,16 @@ fn filter_segments(raw: impl IntoIterator<Item = (f32, String, i64, i64)>) -> Ve
         .collect()
 }
 
+/// Normalize a requested language to what whisper.cpp expects: lowercased (its keys
+/// are lowercase ISO codes, matched case-sensitively), with an empty/whitespace code
+/// treated as unspecified (auto-detect). Without this an accepted `--lang EN` / `""`
+/// reaches whisper as an unknown code and silently collapses the transcript. All
+/// valid codes are lowercase, so lowercasing can't corrupt a real one.
+fn normalize_language(lang: Option<&str>) -> Option<String> {
+    lang.map(str::to_ascii_lowercase)
+        .filter(|code| !code.trim().is_empty())
+}
+
 fn load_error(backend: Backend, path: &Path, detail: String) -> ScrybeError {
     if backend == Backend::Cpu {
         // A SHA-verified file that fails to load is a corrupt/incompatible ggml,
@@ -263,6 +268,18 @@ mod tests {
             13
         );
         assert_eq!(run_error("x".to_owned()).exit_code(), 16);
+    }
+
+    #[test]
+    fn normalize_language_lowercases_and_blanks_to_auto() {
+        // Lowercased so whisper's case-sensitive matcher accepts it; empty/whitespace
+        // becomes None (auto-detect) so an accepted blank code can't collapse output.
+        assert_eq!(normalize_language(Some("EN")).as_deref(), Some("en"));
+        assert_eq!(normalize_language(Some("Fr")).as_deref(), Some("fr"));
+        assert_eq!(normalize_language(Some("auto")).as_deref(), Some("auto"));
+        assert_eq!(normalize_language(Some("")), None);
+        assert_eq!(normalize_language(Some("   ")), None);
+        assert_eq!(normalize_language(None), None);
     }
 
     #[test]

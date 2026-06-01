@@ -574,6 +574,21 @@ mod tests {
         assert!(!info(Model::DistilLargeV35).can_translate);
     }
 
+    #[cfg(unix)]
+    #[test]
+    fn evict_removes_both_the_snapshot_symlink_and_its_blob() {
+        // The HF cache stores a snapshot symlink → blobs/<sha>; evict must delete
+        // both, not just the link (else the blob leaks and the cache never shrinks).
+        let dir = tempfile::tempdir().unwrap();
+        let blob = dir.path().join("blob");
+        std::fs::write(&blob, b"x").unwrap();
+        let snapshot = dir.path().join("snapshot");
+        std::os::unix::fs::symlink(&blob, &snapshot).unwrap();
+        evict(&snapshot);
+        assert!(!snapshot.exists(), "snapshot symlink not removed");
+        assert!(!blob.exists(), "blob (canonical target) not removed");
+    }
+
     #[test]
     fn materialize_vad_reuses_an_existing_valid_copy() {
         // First call writes the bundled model; the second must take the cache-hit
