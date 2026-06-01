@@ -1,0 +1,40 @@
+[package]
+name = "scrybe"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.96"
+description = "Collapse sound into signal — a fast, offline Whisper transcription CLI."
+authors = ["Coroboros <ob@coroboros.com>"]
+license = "MIT"
+readme = "README.md"
+repository = "https://github.com/coroboros/scrybe"
+homepage = "https://github.com/coroboros/scrybe#readme"
+keywords = ["whisper", "transcription", "speech-to-text", "cli", "audio"]
+categories = ["command-line-utilities", "multimedia::audio"]
+# Published to crates.io as `scrybe`; the `@coroboros/scrybe` npm wrapper is added in distribution.
+
+[[bin]]
+name = "scrybe"
+path = "src/main.rs"
+
+[dependencies]
+anstream = "1.0.0"
+anstyle = "1.0.14"
+clap = { version = "4.6.1", features = ["derive"] }
+
+[dev-dependencies]
+assert_cmd = "2.2.2"
+predicates = "3.1.4"
+
+[lints.rust]
+unsafe_code = "forbid"
+
+# Every user-facing failure routes through the error enum, never a panic.
+[lints.clippy]
+unwrap_used = "deny"
+expect_used = "deny"
+panic = "deny"
+
+[profile.release]
+strip = true
+lto = "thin"

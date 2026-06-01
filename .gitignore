@@ -1,0 +1,16 @@
+/target
+**/*.rs.bk
+*.pdb
+
+# Local agent + editor noise
+.claude/settings.local.json
+.claude/output/
+CLAUDE.local.md
+
+# Per-project credentials (see multi-account rule)
+.envrc
+.envrc.local
+
+# OS
+.DS_Store
+*.log
