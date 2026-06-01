@@ -79,6 +79,21 @@ fn ffmpeg_rejects_non_audio_with_exit_10() {
     assert!(err.to_string().contains("ffmpeg failed"), "got: {err}");
 }
 
+#[test]
+fn ffmpeg_decodes_leading_dash_filename() {
+    if which_ffmpeg().is_none() {
+        eprintln!("skipping: ffmpeg not on PATH");
+        return;
+    }
+    // A filename starting with `-` must not be parsed by ffmpeg as an option — the
+    // canonicalize-to-absolute-path guard prevents that. Decode must succeed.
+    let dir = tempfile::tempdir().unwrap();
+    let dash = dir.path().join("-dash.wav");
+    std::fs::copy("tests/fixtures/audio/tone.wav", &dash).unwrap();
+    let pcm = decode(dash.to_str().unwrap(), Decoder::Ffmpeg).expect("decode -dash.wav");
+    assert!(!pcm.samples.is_empty());
+}
+
 fn which_ffmpeg() -> Option<()> {
     std::process::Command::new("ffmpeg")
         .arg("-version")

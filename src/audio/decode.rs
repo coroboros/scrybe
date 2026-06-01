@@ -21,10 +21,12 @@ use crate::error::ScrybeError;
 /// Bytes per decoded f32 sample.
 const SAMPLE_BYTES: u64 = 4;
 
-/// Ceiling on a source's raw decoded PCM. Beyond this, the whole-file decode
-/// would risk exhausting memory before the resample frees it; we fail loud
-/// instead. Long/high-rate inputs should use `--jobs 1` or be pre-converted.
-const MAX_SOURCE_PCM_BYTES: u64 = 2 * 1024 * 1024 * 1024;
+/// Ceiling on one source's raw decoded PCM, before the resample frees it. Derived
+/// from the per-job decode reservation (`model::DECODE_BUFFER`) so the two cannot
+/// desync: with the batch pool running at most `jobs` decodes at once, each capped
+/// here, the aggregate stays within what `guard_memory` reserved. Beyond it we fail
+/// loud; very large sources should use `--decoder ffmpeg` (streams to 16 kHz mono).
+const MAX_SOURCE_PCM_BYTES: u64 = crate::model::DECODE_BUFFER;
 
 /// Interleaved f32 PCM plus the source stream's rate and channel count.
 pub struct Decoded {
@@ -127,7 +129,15 @@ pub fn decode_file(path: &Path) -> Result<Decoded, ScrybeError> {
                 }
             }
             Ok(None) => break,
-            Err(SymphoniaError::ResetRequired) => break,
+            // A chained/multi-segment stream changes track params mid-file. Rather
+            // than silently truncate to the first segment, fail loud and point at
+            // the ffmpeg path, which handles it.
+            Err(SymphoniaError::ResetRequired) => {
+                return Err(unsupported(
+                    "chained or multi-segment stream is not supported; retry with `--decoder ffmpeg`"
+                        .to_owned(),
+                ));
+            }
             Err(SymphoniaError::IoError(_)) => break,
             Err(e) => return Err(unsupported(format!("read error: {e}"))),
         }

@@ -393,4 +393,28 @@ mod tests {
             None
         ));
     }
+
+    #[test]
+    fn outputs_up_to_date_respects_out_dir() {
+        use std::time::{Duration, SystemTime};
+        let in_dir = tempfile::tempdir().unwrap();
+        let out_dir = tempfile::tempdir().unwrap();
+        let input = in_dir.path().join("clip.wav");
+        std::fs::write(&input, b"x").unwrap();
+        let formats = [Format::Txt];
+
+        // No output in the out-dir → stale.
+        assert!(!outputs_up_to_date(&input, &formats, Some(out_dir.path())));
+
+        // Present in the out-dir and newer than the input → up to date.
+        let out = output_path(&input, Format::Txt, Some(out_dir.path()));
+        std::fs::write(&out, b"y").unwrap();
+        std::fs::File::options()
+            .write(true)
+            .open(&out)
+            .unwrap()
+            .set_modified(SystemTime::now() + Duration::from_secs(60))
+            .unwrap();
+        assert!(outputs_up_to_date(&input, &formats, Some(out_dir.path())));
+    }
 }

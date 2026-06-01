@@ -162,3 +162,22 @@ macro_rules! display_via_value_enum {
 }
 
 display_via_value_enum!(Model, Task, Format, Decoder);
+
+#[cfg(test)]
+mod tests {
+    #![allow(clippy::unwrap_used)]
+    use super::*;
+
+    #[test]
+    fn model_display_round_trips_through_value_enum() {
+        // Pins the macro's invariant: every variant names a value, so the Display
+        // never hits its unreachable Debug-name arm. A `#[value(skip)]` or rename
+        // that breaks the round-trip fails here.
+        for model in Model::value_variants() {
+            assert_eq!(
+                model.to_string(),
+                model.to_possible_value().unwrap().get_name()
+            );
+        }
+    }
+}

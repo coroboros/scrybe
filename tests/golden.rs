@@ -95,6 +95,51 @@ fn vad_floor_transcribes_through_the_engine() {
     );
 }
 
+#[test]
+fn translate_task_changes_output_through_the_engine() {
+    // The only end-to-end coverage of `--task translate`. Transcribing French keeps
+    // French; translating it forces English output — so the two transcripts must
+    // differ. A dropped or inverted `set_translate` makes them identical and fails
+    // here. Differential (not an exact match) so it does not depend on tiny's weak
+    // translation quality.
+    let Some(model_path) = scrybe::model::cached_path(Model::Tiny) else {
+        eprintln!("skipping: tiny model not cached — run `scrybe models pull tiny`");
+        return;
+    };
+
+    let engine = Engine::load(&model_path, None).expect("load tiny model");
+    let pcm = audio::load_audio(
+        Path::new("tests/fixtures/speech/fr.wav"),
+        Decoder::Symphonia,
+    )
+    .expect("decode fr.wav");
+    let run = |translate: bool| {
+        let options = TranscribeOptions {
+            language: Some("fr".to_owned()),
+            translate,
+            threads: 4,
+        };
+        engine
+            .transcribe(&pcm.samples, &options, |_| {})
+            .expect("transcribe")
+            .segments
+            .iter()
+            .map(|s| s.text.to_lowercase())
+            .collect::<Vec<_>>()
+            .join(" ")
+            .trim()
+            .to_owned()
+    };
+
+    let transcribed = run(false);
+    let translated = run(true);
+    assert!(!translated.is_empty(), "translation produced no text");
+    assert_ne!(
+        transcribed, translated,
+        "set_translate(true) must change the output (transcribe vs translate)"
+    );
+}
+
 /// Word error rate: word-level edit distance over reference length, after
 /// lowercasing and stripping punctuation.
 fn word_error_rate(reference: &str, hypothesis: &str) -> f64 {

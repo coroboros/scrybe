@@ -389,6 +389,16 @@ mod tests {
     }
 
     #[test]
+    fn exit_code_interrupted_after_completion_is_zero() {
+        // Interrupt requested, but every file already finished → clean success.
+        let results = [result(Outcome::Done {
+            outputs: vec![],
+            language: "en".to_owned(),
+        })];
+        assert!(matches!(batch_exit_code(&results, true, 1), Ok(0)));
+    }
+
+    #[test]
     fn exit_code_interrupted_partial_is_distinct() {
         // One file done, one never processed, run interrupted.
         let results = [

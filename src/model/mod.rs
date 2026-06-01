@@ -5,6 +5,7 @@
 //! transfer, then verified against a pinned SHA-256. `--offline` uses the cache
 //! only.
 
+use std::fmt::Write as _;
 use std::io::Read;
 use std::path::PathBuf;
 
@@ -88,9 +89,15 @@ pub fn info(model: Model) -> ModelInfo {
     }
 }
 
-/// Per-concurrent-decode buffer allowance — a long file's 16 kHz mono PCM is the
-/// worst case (~230 MB for an hour, plus decode overhead).
-const DECODE_BUFFER: u64 = 384 * 1024 * 1024;
+/// Memory budget for one concurrent decode. This is the single source of truth for
+/// the decode-memory invariant: it is BOTH the amount `guard_memory` reserves per
+/// job AND the hard per-file raw-PCM ceiling the decoder enforces (the decode path
+/// derives its ceiling from this value). The batch pool runs at most `jobs` decodes
+/// at once, each bounded by this ceiling, so the aggregate resident decode memory
+/// can never exceed `DECODE_BUFFER * jobs` — the exact figure reserved here. Files
+/// whose raw PCM would exceed it fail loud, with `--decoder ffmpeg` (which streams
+/// straight to 16 kHz mono) as the escape for very large sources.
+pub(crate) const DECODE_BUFFER: u64 = 1024 * 1024 * 1024;
 
 /// Estimated peak memory transcribing `model` at `jobs` concurrent decodes. The
 /// engine loads one shared model context and runs inference serially, so the
@@ -109,10 +116,11 @@ fn estimated_memory(model: Model, jobs: usize) -> u64 {
 const MEMORY_BUDGET_PERCENT: u64 = 85;
 
 /// Whether transcribing `model` at `jobs` would exceed the memory budget. Multiply
-/// before dividing so the percentage doesn't truncate the byte total (no overflow
-/// risk: any real RAM total times 85 stays well within `u64`).
+/// before dividing so the percentage doesn't truncate the byte total; `saturating_mul`
+/// keeps the function total over its whole `u64` domain (it is public and tested
+/// with synthetic RAM values).
 pub fn would_exceed_memory(total_ram: u64, model: Model, jobs: usize) -> bool {
-    estimated_memory(model, jobs) > total_ram * MEMORY_BUDGET_PERCENT / 100
+    estimated_memory(model, jobs) > total_ram.saturating_mul(MEMORY_BUDGET_PERCENT) / 100
 }
 
 /// The largest model that fits at one job, for the smart default and guard hints.
@@ -303,10 +311,10 @@ fn sha256_matches(
         hasher.update(&buf[..read]);
     }
     let digest = hasher.finalize();
-    let hex = digest
-        .iter()
-        .map(|b| format!("{b:02x}"))
-        .collect::<String>();
+    let mut hex = String::with_capacity(64);
+    for byte in digest {
+        let _ = write!(hex, "{byte:02x}"); // writing into a String is infallible
+    }
     Ok(hex.eq_ignore_ascii_case(expected))
 }
 
@@ -343,6 +351,17 @@ mod tests {
         assert!(would_exceed_memory(8 * GB, Model::LargeV3, 16));
         assert!(would_exceed_memory(4 * GB, Model::LargeV3, 1));
         assert!(!would_exceed_memory(8 * GB, Model::LargeV3Turbo, 1));
+    }
+
+    #[test]
+    fn memory_guard_pins_the_budget_boundary() {
+        // Falsify the arithmetic itself, not just the extremes: with total RAM equal
+        // to the estimate the 15% headroom is missing (refused); just above the 85%
+        // line it fits.
+        let est = info(Model::Tiny).size + info(Model::Tiny).size / 2 + DECODE_BUFFER;
+        assert!(would_exceed_memory(est, Model::Tiny, 1));
+        let total_fits = est * 100 / MEMORY_BUDGET_PERCENT + 1;
+        assert!(!would_exceed_memory(total_fits, Model::Tiny, 1));
     }
 
     #[test]

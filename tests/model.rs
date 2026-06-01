@@ -84,6 +84,17 @@ fn english_only_model_accepts_en_case_insensitively() {
 }
 
 #[test]
+fn multilingual_model_accepts_non_english_lang() {
+    // tiny is multilingual; --lang fr must pass the capability gate. --dry-run
+    // stops before any download, so this stays network-free.
+    scrybe()
+        .args(["--model", "tiny", "--lang", "fr", "--dry-run", WAV])
+        .assert()
+        .success()
+        .stderr(predicate::str::contains("English-only").not());
+}
+
+#[test]
 fn offline_without_cache_exits_11() {
     // An empty HF_HOME forces a cache miss; --offline must error with exit 11 and
     // make no network call (the offline branch never touches the API).
