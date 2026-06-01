@@ -151,6 +151,46 @@ pub fn decode_file(path: &Path) -> Result<Decoded, ScrybeError> {
     })
 }
 
+/// Why streaming f32le decode stopped early.
+#[derive(Debug)]
+enum StreamError {
+    /// The running sample count exceeded the caller's ceiling.
+    Overflow,
+    /// A read from the source failed.
+    Io(std::io::Error),
+}
+
+/// Decode an f32-little-endian byte stream into samples, reassembling values that
+/// straddle reads and bailing with `Overflow` once `max_samples` is passed. Pure
+/// over any `Read`, so the byte reassembly and the ceiling are unit-testable
+/// without spawning a subprocess; the caller owns any process teardown.
+fn read_f32le_stream<R: std::io::Read>(
+    mut src: R,
+    max_samples: usize,
+) -> Result<Vec<f32>, StreamError> {
+    let mut samples: Vec<f32> = Vec::new();
+    let mut pending: Vec<u8> = Vec::new(); // < 4 leftover bytes spanning reads
+    let mut buf = [0u8; 1 << 16];
+    loop {
+        let read = src.read(&mut buf).map_err(StreamError::Io)?;
+        if read == 0 {
+            break;
+        }
+        pending.extend_from_slice(&buf[..read]);
+        let full = pending.len() / 4 * 4;
+        samples.extend(
+            pending[..full]
+                .chunks_exact(4)
+                .map(|b| f32::from_le_bytes([b[0], b[1], b[2], b[3]])),
+        );
+        pending.drain(..full);
+        if samples.len() > max_samples {
+            return Err(StreamError::Overflow);
+        }
+    }
+    Ok(samples)
+}
+
 /// Raw interleaved f32 PCM bytes a source of `frames` × `channels` would decode to.
 fn raw_pcm_bytes(frames: u64, channels: u16) -> u64 {
     frames
@@ -225,30 +265,12 @@ pub fn decode_via_ffmpeg(path: &Path) -> Result<Decoded, ScrybeError> {
     // moment the running total would exceed the ceiling — so peak memory stays
     // bounded by `MAX_SOURCE_PCM_BYTES` like the symphonia path, instead of
     // buffering the whole (possibly huge) stream first. `-v error` keeps stderr
-    // tiny, so draining stdout before reading it cannot deadlock.
+    // tiny, so draining stdout before reading it cannot deadlock. The byte loop is
+    // a pure, unit-tested helper; the child kill/wait stays here.
     let max_samples = (MAX_SOURCE_PCM_BYTES / SAMPLE_BYTES) as usize;
-    let mut samples: Vec<f32> = Vec::new();
-    let mut pending: Vec<u8> = Vec::new(); // < 4 leftover bytes spanning reads
-    let mut buf = [0u8; 1 << 16];
-    loop {
-        let read = match stdout.read(&mut buf) {
-            Ok(0) => break,
-            Ok(n) => n,
-            Err(e) => {
-                let _ = child.kill();
-                let _ = child.wait();
-                return Err(unsupported(format!("reading ffmpeg output failed: {e}")));
-            }
-        };
-        pending.extend_from_slice(&buf[..read]);
-        let full = pending.len() / 4 * 4;
-        samples.extend(
-            pending[..full]
-                .chunks_exact(4)
-                .map(|b| f32::from_le_bytes([b[0], b[1], b[2], b[3]])),
-        );
-        pending.drain(..full);
-        if samples.len() > max_samples {
+    let samples = match read_f32le_stream(&mut stdout, max_samples) {
+        Ok(samples) => samples,
+        Err(StreamError::Overflow) => {
             let _ = child.kill();
             let _ = child.wait();
             return Err(unsupported(
@@ -256,7 +278,12 @@ pub fn decode_via_ffmpeg(path: &Path) -> Result<Decoded, ScrybeError> {
                     .to_owned(),
             ));
         }
-    }
+        Err(StreamError::Io(e)) => {
+            let _ = child.kill();
+            let _ = child.wait();
+            return Err(unsupported(format!("reading ffmpeg output failed: {e}")));
+        }
+    };
 
     let status = child
         .wait()
@@ -397,6 +424,64 @@ mod tests {
         // it as HE-AAC; structural parsing stops at the channel config and treats
         // it as plain AAC-LC. (Same bytes as the positive fixture, channels → 0.)
         assert!(!is_he_aac_asc(&[0x14, 0x00, 0x56, 0xe5, 0xa8]));
+    }
+
+    /// A `Read` that yields at most `chunk` bytes per call, so a 4-byte f32 can
+    /// straddle reads — exercising the carry path.
+    struct ChunkedReader<'a> {
+        data: &'a [u8],
+        pos: usize,
+        chunk: usize,
+    }
+
+    impl std::io::Read for ChunkedReader<'_> {
+        fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+            let n = self.data[self.pos..].len().min(self.chunk).min(buf.len());
+            buf[..n].copy_from_slice(&self.data[self.pos..self.pos + n]);
+            self.pos += n;
+            Ok(n)
+        }
+    }
+
+    #[test]
+    fn read_f32le_stream_reassembles_split_samples() {
+        // Two f32 split across 3-byte reads, so both straddle a read boundary.
+        let bytes: Vec<u8> = 1.5f32
+            .to_le_bytes()
+            .into_iter()
+            .chain((-2.25f32).to_le_bytes())
+            .collect();
+        let reader = ChunkedReader {
+            data: &bytes,
+            pos: 0,
+            chunk: 3,
+        };
+        let out = read_f32le_stream(reader, usize::MAX).unwrap();
+        assert_eq!(out, vec![1.5, -2.25]);
+    }
+
+    #[test]
+    fn read_f32le_stream_bails_on_overflow() {
+        let bytes = vec![0u8; 12]; // three f32
+        let reader = ChunkedReader {
+            data: &bytes,
+            pos: 0,
+            chunk: 5,
+        };
+        assert!(matches!(
+            read_f32le_stream(reader, 2),
+            Err(StreamError::Overflow)
+        ));
+    }
+
+    #[test]
+    fn read_f32le_stream_empty_is_empty() {
+        let reader = ChunkedReader {
+            data: &[],
+            pos: 0,
+            chunk: 4,
+        };
+        assert!(read_f32le_stream(reader, 16).unwrap().is_empty());
     }
 
     #[test]

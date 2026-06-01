@@ -84,6 +84,12 @@ mod tests {
     }
 
     #[test]
+    fn downmix_averages_three_channels() {
+        // One 3-channel frame [1,2,3] → mean 2.0; pins the general (>2 channels) arm.
+        assert_eq!(downmix(vec![1.0, 2.0, 3.0], 3), vec![2.0]);
+    }
+
+    #[test]
     fn downmix_drops_trailing_partial_frame() {
         // `chunks_exact` ignores a lone trailing sample that doesn't complete a
         // stereo frame — documenting that intended behavior.

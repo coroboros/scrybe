@@ -39,6 +39,15 @@ pub fn to_16k_mono(mono: Vec<f32>, src_rate: u32) -> Result<Vec<f32>, String> {
         InterleavedSlice::new(&mono, channels, in_frames).map_err(|e| fail(e.to_string()))?;
 
     let out_capacity = resampler.process_all_needed_output_len(in_frames);
+    // A low source rate upsamples a modest raw buffer into a much larger output;
+    // bound it before the allocation so a crafted rate can't force a multi-GB alloc
+    // the raw-PCM ceiling alone doesn't catch.
+    if resample_output_too_large(out_capacity) {
+        return Err(fail(
+            "resampled output exceeds the in-memory limit; use a shorter clip or `--decoder ffmpeg`"
+                .to_owned(),
+        ));
+    }
     let mut out = vec![0.0f32; out_capacity];
     let mut output = InterleavedSlice::new_mut(&mut out, channels, out_capacity)
         .map_err(|e| fail(e.to_string()))?;
@@ -48,6 +57,14 @@ pub fn to_16k_mono(mono: Vec<f32>, src_rate: u32) -> Result<Vec<f32>, String> {
         .map_err(|e| fail(e.to_string()))?;
     out.truncate(out_done);
     Ok(out)
+}
+
+/// Whether a resample would allocate an output buffer beyond the per-job decode
+/// budget — the binding constraint when upsampling (output larger than the raw
+/// input the decode ceiling bounds).
+fn resample_output_too_large(out_frames: usize) -> bool {
+    const F32_BYTES: u64 = 4;
+    (out_frames as u64).saturating_mul(F32_BYTES) > crate::model::DECODE_BUFFER
 }
 
 #[cfg(test)]
@@ -77,6 +94,14 @@ mod tests {
             to_16k_mono(input.clone(), TARGET_SAMPLE_RATE).unwrap(),
             input
         );
+    }
+
+    #[test]
+    fn resample_output_ceiling_bounds_upsample_alloc() {
+        assert!(!resample_output_too_large(1_000_000)); // ~4 MB, fine
+        let over = (crate::model::DECODE_BUFFER / 4) as usize + 1;
+        assert!(resample_output_too_large(over));
+        assert!(resample_output_too_large(usize::MAX)); // saturates, never wraps
     }
 
     #[test]

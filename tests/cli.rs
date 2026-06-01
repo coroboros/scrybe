@@ -207,15 +207,22 @@ fn skips_up_to_date_output_unless_forced() {
             .arg("tests/fixtures/speech/en.wav");
         cmd
     };
+    let mtime = || {
+        std::fs::metadata(out.path().join("en.txt"))
+            .and_then(|m| m.modified())
+            .unwrap()
+    };
     transcribe(false)
         .assert()
         .success()
         .stderr(predicate::str::contains("ok"));
-    // Second run: output is current → skipped.
+    let first = mtime();
+    // Second run: output is current → skipped, and the file is not rewritten.
     transcribe(false)
         .assert()
         .success()
         .stderr(predicate::str::contains("up to date"));
+    assert_eq!(mtime(), first, "a skipped file must not be rewritten");
     // --force reprocesses.
     transcribe(true)
         .assert()
