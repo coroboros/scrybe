@@ -152,6 +152,17 @@ pub fn resolve_model(explicit: Option<Model>, total_ram: Option<u64>, jobs: usiz
     explicit.unwrap_or_else(|| total_ram.map_or(DEFAULT_MODEL, |ram| largest_fitting(ram, jobs)))
 }
 
+/// The most jobs at which `model` still fits `total_ram` (at least 1). The decode
+/// reservation grows `DECODE_BUFFER` per job, so `cores/2` on a big box can exceed
+/// RAM on its own; the auto job count is clamped to this against the smallest model
+/// so a zero-config run is never refused by its own guard.
+pub(crate) fn max_jobs_fitting(total_ram: u64, model: Model) -> usize {
+    let budget = total_ram / 100 * MEMORY_BUDGET_PERCENT;
+    let info = info(model);
+    let resident = info.size + info.size / 2; // weights + working set, resident once
+    ((budget.saturating_sub(resident) / DECODE_BUFFER) as usize).max(1)
+}
+
 /// Total physical memory in bytes, or `None` when it can't be read.
 pub fn total_memory() -> Option<u64> {
     use sysinfo::{MemoryRefreshKind, RefreshKind, System};
@@ -162,9 +173,10 @@ pub fn total_memory() -> Option<u64> {
     (total > 0).then_some(total)
 }
 
-/// Refuse to run when the model plus job count would not fit in memory.
-pub fn guard_memory(model: Model, jobs: usize) -> Result<(), ScrybeError> {
-    let Some(total) = total_memory() else {
+/// Refuse to run when the model plus job count would not fit in memory. Takes the
+/// detected total so the whole run reads RAM once.
+pub fn guard_memory(model: Model, jobs: usize, total: Option<u64>) -> Result<(), ScrybeError> {
+    let Some(total) = total else {
         return Ok(());
     };
     if would_exceed_memory(total, model, jobs) {

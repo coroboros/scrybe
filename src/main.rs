@@ -56,11 +56,13 @@ fn transcribe(cli: &Cli) -> Result<i32, ScrybeError> {
     // checks what will actually run. Inference is serial (one shared context), so
     // `--jobs` widens decode-ahead, not the number of concurrent inferences.
     let backend = engine::active_backend();
-    let (jobs, clamp_note) = batch::resolve_jobs(cli.jobs, backend);
-    // Select the default against the job count that will actually run, so a
-    // zero-config default can never be refused by its own memory guard.
-    let model = model::resolve_model(cli.model, model::total_memory(), jobs);
-    model::guard_memory(model, jobs)?;
+    // Read RAM once and thread it through jobs, model, and the guard. The auto job
+    // count and the default model are both chosen against it so a zero-config run is
+    // never refused by its own guard.
+    let total_ram = model::total_memory();
+    let (jobs, clamp_note) = batch::resolve_jobs(cli.jobs, backend, total_ram);
+    let model = model::resolve_model(cli.model, total_ram, jobs);
+    model::guard_memory(model, jobs, total_ram)?;
 
     if let Some(code) = validate_model_capabilities(model, cli) {
         return Ok(code);

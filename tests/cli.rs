@@ -89,11 +89,45 @@ fn invalid_model_lists_valid_models_and_exits_nonzero() {
 }
 
 #[test]
-fn bad_numeric_input_does_not_panic() {
+fn non_numeric_jobs_is_a_clap_usage_error() {
+    // `--jobs abc` is rejected by clap before scrybe runs — pin that exit-2 contract.
     scrybe()
         .args(["--jobs", "abc", "Cargo.toml"])
         .assert()
         .failure()
+        .code(2);
+}
+
+#[test]
+fn zero_jobs_is_clamped_not_panicked() {
+    // `--jobs 0` passes clap and reaches resolve_jobs; it must clamp to 1, never
+    // divide-by-zero or panic. Model-free via --dry-run.
+    scrybe()
+        .args(["--jobs", "0", "--dry-run", "tests/fixtures/speech/en.wav"])
+        .assert()
+        .success()
+        .stderr(predicate::str::contains("panicked").not());
+}
+
+#[test]
+fn malformed_audio_fails_without_panicking() {
+    if !tiny_cached() {
+        eprintln!("skipping: tiny model not cached");
+        return;
+    }
+    // Garbage bytes with an audio extension reach the decoder (scrybe's own path),
+    // which must fail loud (exit 20, partial batch) — never panic past the no-panic
+    // lints.
+    let dir = tempfile::tempdir().unwrap();
+    let bad = dir.path().join("bad.wav");
+    std::fs::write(&bad, b"definitely not a wav file").unwrap();
+    scrybe()
+        .args(["--model", "tiny", "--format", "txt", "--out-dir"])
+        .arg(dir.path())
+        .arg(&bad)
+        .assert()
+        .failure()
+        .code(20)
         .stderr(predicate::str::contains("panicked").not());
 }
 

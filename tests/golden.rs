@@ -143,6 +143,39 @@ fn translate_task_changes_output_through_the_engine() {
     );
 }
 
+#[test]
+fn auto_detects_and_reports_french() {
+    // WS-4: a non-English clip with no --lang is auto-detected and reported.
+    // `language: None` routes through full_lang_id_from_state + get_lang_str (the
+    // detect arm), not the echo arm an explicit --lang would take.
+    let Some(model_path) = tiny_model_path() else {
+        eprintln!("skipping: tiny model not cached — run `scrybe models pull tiny`");
+        return;
+    };
+    let engine = Engine::load(&model_path, None).expect("load tiny model");
+    let pcm = audio::load_audio(
+        Path::new("tests/fixtures/speech/fr.wav"),
+        Decoder::Symphonia,
+    )
+    .expect("decode fr.wav");
+    let options = TranscribeOptions {
+        language: None,
+        translate: false,
+        threads: 4,
+    };
+    let transcript = engine
+        .transcribe(&pcm.samples, &options, |_| {})
+        .expect("transcribe with auto-detect");
+    assert_eq!(
+        transcript.language, "fr",
+        "French clip must auto-detect as fr"
+    );
+    assert!(
+        !transcript.segments.is_empty(),
+        "auto-detect produced no segments"
+    );
+}
+
 /// Word error rate: word-level edit distance over reference length, after
 /// lowercasing and stripping punctuation.
 fn word_error_rate(reference: &str, hypothesis: &str) -> f64 {

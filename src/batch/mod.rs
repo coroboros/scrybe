@@ -48,14 +48,33 @@ fn cpu_default_jobs(cores: usize) -> usize {
     (cores / 2).max(1)
 }
 
+/// The auto CPU job count: half the cores, but clamped so its decode-buffer
+/// reservation can't by itself exceed the memory budget — otherwise a zero-config
+/// run on a high-core / modest-RAM box is refused by its own guard before decoding
+/// anything. An explicit `--jobs N` is never clamped here (user intent fails loud).
+fn auto_cpu_jobs(cores: usize, total_ram: Option<u64>) -> usize {
+    let base = cpu_default_jobs(cores);
+    match total_ram {
+        Some(ram) => base.min(crate::model::max_jobs_fitting(ram, crate::cli::Model::Tiny)),
+        None => base,
+    }
+    .max(1)
+}
+
 /// Resolve the concurrent-file count for the active backend. A single GPU
 /// command queue serializes inference, so more than two concurrent jobs only
-/// contend — clamp and say so. On CPU, default to half the cores.
-pub fn resolve_jobs(requested: Option<usize>, backend: Backend) -> (usize, Option<String>) {
+/// contend — clamp and say so. On CPU, default to half the cores (RAM-clamped).
+pub fn resolve_jobs(
+    requested: Option<usize>,
+    backend: Backend,
+    total_ram: Option<u64>,
+) -> (usize, Option<String>) {
     let cores = detected_parallelism();
     match backend {
         Backend::Cpu => (
-            requested.unwrap_or_else(|| cpu_default_jobs(cores)).max(1),
+            requested
+                .unwrap_or_else(|| auto_cpu_jobs(cores, total_ram))
+                .max(1),
             None,
         ),
         _ => {
@@ -337,19 +356,50 @@ mod tests {
 
     #[test]
     fn gpu_jobs_clamped_to_two() {
-        let (jobs, note) = resolve_jobs(Some(4), Backend::Metal);
+        let (jobs, note) = resolve_jobs(Some(4), Backend::Metal, None);
         assert_eq!(jobs, 2);
         assert!(note.is_some());
 
-        let (jobs, note) = resolve_jobs(Some(1), Backend::Metal);
+        let (jobs, note) = resolve_jobs(Some(1), Backend::Metal, None);
         assert_eq!(jobs, 1);
         assert!(note.is_none());
     }
 
     #[test]
     fn cpu_jobs_default_and_override() {
-        assert!(resolve_jobs(None, Backend::Cpu).0 >= 1);
-        assert_eq!(resolve_jobs(Some(3), Backend::Cpu).0, 3);
+        assert!(resolve_jobs(None, Backend::Cpu, None).0 >= 1);
+        // An explicit --jobs is honored as-is, never RAM-clamped (user intent).
+        assert_eq!(
+            resolve_jobs(Some(3), Backend::Cpu, Some(8 * 1024 * 1024 * 1024)).0,
+            3
+        );
+    }
+
+    #[test]
+    fn auto_cpu_jobs_clamps_to_what_ram_allows() {
+        const GB: u64 = 1024 * 1024 * 1024;
+        // Half of 16 cores is 8, but 8 GiB can't reserve 8 decode buffers — clamp.
+        assert!(auto_cpu_jobs(16, Some(8 * GB)) < cpu_default_jobs(16));
+        // No RAM reading → unclamped heuristic.
+        assert_eq!(auto_cpu_jobs(16, None), cpu_default_jobs(16));
+    }
+
+    #[test]
+    fn zero_config_cpu_run_is_never_refused() {
+        // The honest guarantee: across core/RAM grids, the auto (jobs, model) pair a
+        // flag-free CPU run resolves to is never rejected by guard_memory. No skip
+        // clause — the auto job count is RAM-clamped so a fit always exists.
+        const GB: u64 = 1024 * 1024 * 1024;
+        for &cores in &[2usize, 8, 16, 24, 32, 64] {
+            for &ram in &[2 * GB, 4 * GB, 8 * GB, 16 * GB] {
+                let jobs = auto_cpu_jobs(cores, Some(ram));
+                let model = crate::model::resolve_model(None, Some(ram), jobs);
+                assert!(
+                    !crate::model::would_exceed_memory(ram, model, jobs),
+                    "zero-config refused: {cores} cores / {ram} bytes → {jobs} jobs, {model}"
+                );
+            }
+        }
     }
 
     #[test]
