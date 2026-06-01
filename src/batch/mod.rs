@@ -110,8 +110,10 @@ pub fn run(engine: &Engine, files: &[PathBuf], cfg: &Config<'_>) -> Result<i32, 
         })?;
 
     // The index identifies the file; the consumer borrows `files[index]`, so no
-    // path is cloned through the channel.
-    let (tx, rx) = sync_channel::<(usize, DecodeMsg)>(cfg.jobs);
+    // path is cloned through the channel. Capacity 1 stages just the next file —
+    // enough to keep inference fed — so peak resident decode buffers stay within
+    // the memory guard's per-job budget rather than doubling with the channel.
+    let (tx, rx) = sync_channel::<(usize, DecodeMsg)>(1);
     let mut results: Vec<Option<FileResult>> = (0..files.len()).map(|_| None).collect();
 
     std::thread::scope(|scope| {

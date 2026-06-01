@@ -180,6 +180,14 @@ pub fn decode_via_ffmpeg(path: &Path) -> Result<Decoded, ScrybeError> {
         )));
     }
 
+    // Same in-memory ceiling as the symphonia path; the stdout bytes are already
+    // f32le PCM, so the byte length is exact. Reject before the second alloc.
+    if output.stdout.len() as u64 > MAX_SOURCE_PCM_BYTES {
+        return Err(unsupported(
+            "audio is too large to decode in memory; use a shorter clip".to_owned(),
+        ));
+    }
+
     let samples = output
         .stdout
         .chunks_exact(4)

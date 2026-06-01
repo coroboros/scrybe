@@ -154,29 +154,21 @@ impl Engine {
             .full(params, pcm)
             .map_err(|e| run_error(e.to_string()))?;
 
-        let mut segments = Vec::new();
         let count = state.full_n_segments();
-        for index in 0..count {
-            let Some(segment) = state.get_segment(index) else {
-                continue;
-            };
-            // Hallucination gate: skip segments whisper marks as likely silence.
-            if segment.no_speech_probability() > NO_SPEECH_DROP {
-                continue;
-            }
+        let raw = (0..count).filter_map(|index| {
+            let segment = state.get_segment(index)?;
             let text = segment
                 .to_str_lossy()
-                .map(|cow| cow.trim().to_owned())
+                .map(|cow| cow.into_owned())
                 .unwrap_or_default();
-            if text.is_empty() {
-                continue;
-            }
-            segments.push(Segment {
-                start: segment.start_timestamp() as f64 / 100.0,
-                end: segment.end_timestamp() as f64 / 100.0,
+            Some((
+                segment.no_speech_probability(),
                 text,
-            });
-        }
+                segment.start_timestamp(),
+                segment.end_timestamp(),
+            ))
+        });
+        let segments = filter_segments(raw);
 
         let detected = match opts.language.as_deref() {
             Some(lang) if lang != "auto" => lang.to_owned(),
@@ -191,6 +183,28 @@ impl Engine {
             language: detected,
         })
     }
+}
+
+/// Apply the hallucination gate (drop segments whisper marks as likely silence),
+/// trim and skip empty text, and map centisecond timestamps to seconds. Pure (no
+/// FFI) so the correctness floor is unit-testable without a model.
+fn filter_segments(raw: impl IntoIterator<Item = (f32, String, i64, i64)>) -> Vec<Segment> {
+    raw.into_iter()
+        .filter_map(|(no_speech, text, start_cs, end_cs)| {
+            if no_speech > NO_SPEECH_DROP {
+                return None;
+            }
+            let text = text.trim().to_owned();
+            if text.is_empty() {
+                return None;
+            }
+            Some(Segment {
+                start: start_cs as f64 / 100.0,
+                end: end_cs as f64 / 100.0,
+                text,
+            })
+        })
+        .collect()
 }
 
 fn load_error(path: &Path, detail: String) -> ScrybeError {
@@ -235,5 +249,22 @@ mod tests {
             15
         );
         assert_eq!(run_error("x".to_owned()).exit_code(), 1);
+    }
+
+    #[test]
+    fn filter_segments_enforces_the_no_speech_gate() {
+        let raw = vec![
+            (0.9_f32, "loud silence".to_owned(), 0, 100), // > 0.6 → dropped
+            (0.6_f32, "boundary kept".to_owned(), 100, 250), // == 0.6 → kept (`>` semantics)
+            (0.1_f32, "   ".to_owned(), 250, 300),        // whitespace → skipped
+            (0.1_f32, "  hello  ".to_owned(), 300, 450),  // trimmed and kept
+        ];
+        let segs = filter_segments(raw);
+        assert_eq!(segs.len(), 2);
+        assert_eq!(segs[0].text, "boundary kept");
+        assert_eq!(segs[0].start, 1.0); // 100 cs / 100
+        assert_eq!(segs[0].end, 2.5);
+        assert_eq!(segs[1].text, "hello"); // trimmed
+        assert_eq!(segs[1].start, 3.0);
     }
 }

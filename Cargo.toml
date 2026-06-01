@@ -32,7 +32,10 @@ serde_json = "1.0.150"
 sha2 = "0.11.0"
 symphonia = { version = "0.6.0", features = ["mp3", "aac", "alac", "isomp4", "ogg", "vorbis", "flac", "wav", "pcm"] }
 sysinfo = "0.39.3"
-whisper-rs = "0.16.0"
+# Pinned exactly: a patch bump rebuilds the vendored whisper.cpp from source and
+# can shift transcription output or break the FFI build — unlike the pure-Rust deps,
+# which tolerate caret ranges.
+whisper-rs = "=0.16.0"
 
 [features]
 # CPU backend everywhere by default, so the crate builds with no GPU toolchain
