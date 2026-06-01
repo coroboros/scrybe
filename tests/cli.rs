@@ -10,7 +10,7 @@
 use predicates::prelude::*;
 
 mod common;
-use common::{scrybe, tiny_cached};
+use common::{ffmpeg_available, scrybe, tiny_cached};
 
 /// ANSI escape introducer — its presence means color was emitted.
 const ESC: &str = "\u{1b}";
@@ -493,6 +493,39 @@ fn threads_override_is_reflected_in_the_plan_banner() {
         .assert()
         .success()
         .stderr(predicate::str::contains("threads=auto"));
+}
+
+#[test]
+fn decoder_ffmpeg_wires_through_the_binary() {
+    if !ffmpeg_available() {
+        eprintln!("skipping: ffmpeg not on PATH");
+        return;
+    }
+    if !tiny_cached() {
+        eprintln!("skipping: tiny model not cached");
+        return;
+    }
+    // he-aac.m4a needs ffmpeg (symphonia rejects it), so success proves the
+    // clap→Config→load_audio(ffmpeg) seam end to end.
+    let out = tempfile::tempdir().unwrap();
+    scrybe()
+        .args([
+            "--model",
+            "tiny",
+            "--decoder",
+            "ffmpeg",
+            "--format",
+            "txt",
+            "--out-dir",
+        ])
+        .arg(out.path())
+        .arg("tests/fixtures/aac/he-aac.m4a")
+        .assert()
+        .success();
+    assert!(
+        out.path().join("he-aac.txt").exists(),
+        "ffmpeg-decoded output should be written"
+    );
 }
 
 #[test]

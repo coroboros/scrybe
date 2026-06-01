@@ -132,10 +132,12 @@ pub(crate) fn would_exceed_memory(total_ram: u64, model: Model, jobs: usize) -> 
     estimated_memory(model, jobs) > total_ram.saturating_mul(MEMORY_BUDGET_PERCENT) / 100
 }
 
-/// The largest model that fits at one job, for the smart default and guard hints.
-pub(crate) fn largest_fitting(total_ram: u64) -> Model {
+/// The largest model that fits at `jobs` concurrent jobs, for the smart default and
+/// guard hints. Selecting at the job count the run will actually use means a
+/// self-chosen default can never be refused by its own guard.
+pub(crate) fn largest_fitting(total_ram: u64, jobs: usize) -> Model {
     for model in [Model::LargeV3Turbo, Model::Small, Model::Base, Model::Tiny] {
-        if !would_exceed_memory(total_ram, model, 1) {
+        if !would_exceed_memory(total_ram, model, jobs) {
             return model;
         }
     }
@@ -143,11 +145,11 @@ pub(crate) fn largest_fitting(total_ram: u64) -> Model {
 }
 
 /// Resolve the model to run: an explicit `--model` is honored as-is (and later
-/// guarded, so an oversized explicit pick still fails loud); when omitted, pick
-/// the largest model that fits detected RAM, falling back to the nominal default
-/// when memory can't be read.
-pub fn resolve_model(explicit: Option<Model>, total_ram: Option<u64>) -> Model {
-    explicit.unwrap_or_else(|| total_ram.map_or(DEFAULT_MODEL, largest_fitting))
+/// guarded, so an oversized explicit pick still fails loud); when omitted, pick the
+/// largest model that fits detected RAM *at the resolved job count*, falling back to
+/// the nominal default when memory can't be read.
+pub fn resolve_model(explicit: Option<Model>, total_ram: Option<u64>, jobs: usize) -> Model {
+    explicit.unwrap_or_else(|| total_ram.map_or(DEFAULT_MODEL, |ram| largest_fitting(ram, jobs)))
 }
 
 /// Total physical memory in bytes, or `None` when it can't be read.
@@ -166,7 +168,9 @@ pub fn guard_memory(model: Model, jobs: usize) -> Result<(), ScrybeError> {
         return Ok(());
     };
     if would_exceed_memory(total, model, jobs) {
-        let fits = largest_fitting(total);
+        // Recommend a model that fits at the SAME job count, so the hint can never
+        // name the model just refused.
+        let fits = largest_fitting(total, jobs);
         return Err(ScrybeError::OutOfMemory {
             detail: format!(
                 "{model} at {jobs} job(s) needs ~{}, but only {} is available; the largest model that fits is `{fits}`",
@@ -272,7 +276,10 @@ fn fetch_verified(
         ));
     }
 
-    let api = ApiBuilder::new()
+    // `from_env`, not `new`: it builds on `Cache::from_env()` (HF_HOME-aware) and
+    // honors HF_ENDPOINT, so downloads land in the same tree `cached()`/`cache_dir()`
+    // read. `new` hardcodes ~/.cache/huggingface and would split pull from lookup.
+    let api = ApiBuilder::from_env()
         .with_progress(true)
         .build()
         .map_err(|e| dl_error(e.to_string()))?;
@@ -404,9 +411,12 @@ mod tests {
 
     #[test]
     fn smart_default_shrinks_on_low_memory() {
-        assert_eq!(largest_fitting(8 * GB), Model::LargeV3Turbo);
-        assert_eq!(largest_fitting(2 * GB), Model::Small);
-        assert_eq!(largest_fitting(512 * 1024 * 1024), Model::Tiny);
+        assert_eq!(largest_fitting(8 * GB, 1), Model::LargeV3Turbo);
+        assert_eq!(largest_fitting(2 * GB, 1), Model::Small);
+        assert_eq!(largest_fitting(512 * 1024 * 1024, 1), Model::Tiny);
+        // More jobs add decode buffers, so the largest that fits shrinks: 8 GiB at
+        // 6 jobs can't hold turbo's weights plus 6 GiB of buffers.
+        assert_ne!(largest_fitting(8 * GB, 6), Model::LargeV3Turbo);
     }
 
     #[test]
@@ -414,14 +424,36 @@ mod tests {
         // Explicit pick passes through untouched, even when it won't fit (the
         // memory guard refuses it later — never a silent override).
         assert_eq!(
-            resolve_model(Some(Model::LargeV3), Some(2 * GB)),
+            resolve_model(Some(Model::LargeV3), Some(2 * GB), 1),
             Model::LargeV3
         );
         // Omitted --model resolves to the largest that fits detected RAM.
-        assert_eq!(resolve_model(None, Some(8 * GB)), Model::LargeV3Turbo);
-        assert_eq!(resolve_model(None, Some(2 * GB)), Model::Small);
+        assert_eq!(resolve_model(None, Some(8 * GB), 1), Model::LargeV3Turbo);
+        assert_eq!(resolve_model(None, Some(2 * GB), 1), Model::Small);
         // Unknown RAM falls back to the nominal default.
-        assert_eq!(resolve_model(None, None), DEFAULT_MODEL);
+        assert_eq!(resolve_model(None, None, 1), DEFAULT_MODEL);
+    }
+
+    #[test]
+    fn smart_default_is_never_refused_by_its_own_guard() {
+        // Regression: the default is selected at the job count it will run at, so a
+        // zero-config run can't pick a model the guard then rejects (the jobs=1-only
+        // selection used to refuse itself on high-core / low-RAM CPU boxes).
+        // Invariant: whenever the machine can run *anything* at this job count (tiny
+        // fits), the resolved default fits too. If even tiny can't fit, refusing is
+        // correct, so that case is excluded.
+        for &ram in &[4 * GB, 6 * GB, 8 * GB, 16 * GB] {
+            for &jobs in &[1usize, 2, 4, 6, 12] {
+                if would_exceed_memory(ram, Model::Tiny, jobs) {
+                    continue;
+                }
+                let model = resolve_model(None, Some(ram), jobs);
+                assert!(
+                    !would_exceed_memory(ram, model, jobs),
+                    "default {model} refused at {ram} bytes / {jobs} jobs though tiny fits"
+                );
+            }
+        }
     }
 
     #[test]

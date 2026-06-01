@@ -26,3 +26,11 @@ pub fn tiny_model_path() -> Option<std::path::PathBuf> {
 pub fn tiny_cached() -> bool {
     tiny_model_path().is_some()
 }
+
+/// Whether a usable `ffmpeg` is on PATH; ffmpeg-path tests skip cleanly otherwise.
+pub fn ffmpeg_available() -> bool {
+    std::process::Command::new("ffmpeg")
+        .arg("-version")
+        .output()
+        .is_ok_and(|o| o.status.success())
+}

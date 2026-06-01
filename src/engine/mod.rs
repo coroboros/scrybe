@@ -95,7 +95,7 @@ impl Engine {
         let mut params = WhisperContextParameters::default();
         params.use_gpu(active_backend() != Backend::Cpu);
         let ctx = WhisperContext::new_with_params(model_path, params)
-            .map_err(|e| load_error(model_path, e.to_string()))?;
+            .map_err(|e| load_error(active_backend(), model_path, e.to_string()))?;
         Ok(Self {
             ctx,
             vad_model_path: vad_model_path.map(Path::to_path_buf),
@@ -210,8 +210,8 @@ fn filter_segments(raw: impl IntoIterator<Item = (f32, String, i64, i64)>) -> Ve
         .collect()
 }
 
-fn load_error(path: &Path, detail: String) -> ScrybeError {
-    if active_backend() == Backend::Cpu {
+fn load_error(backend: Backend, path: &Path, detail: String) -> ScrybeError {
+    if backend == Backend::Cpu {
         // A SHA-verified file that fails to load is a corrupt/incompatible ggml,
         // not a download or GPU fault.
         ScrybeError::ModelLoadFailed {
@@ -219,6 +219,7 @@ fn load_error(path: &Path, detail: String) -> ScrybeError {
             detail,
         }
     } else {
+        // GPU build: a failed context creation is where GPU init actually happens.
         ScrybeError::GpuInitFailed { detail }
     }
 }
@@ -243,11 +244,15 @@ mod tests {
 
     #[test]
     fn cpu_engine_errors_are_not_labelled_gpu() {
-        // On the default CPU build, load and runtime failures must not surface as
-        // GPU faults (exit 13): a corrupt model is 15, a compute failure is 16.
+        // Both load_error arms, independent of the compiled backend: a corrupt model
+        // is 15 on CPU and 13 (GPU init) on a GPU build; a runtime fault is 16.
         assert_eq!(
-            load_error(Path::new("/m.bin"), "x".to_owned()).exit_code(),
+            load_error(Backend::Cpu, Path::new("/m.bin"), "x".to_owned()).exit_code(),
             15
+        );
+        assert_eq!(
+            load_error(Backend::Metal, Path::new("/m.bin"), "x".to_owned()).exit_code(),
+            13
         );
         assert_eq!(run_error("x".to_owned()).exit_code(), 16);
     }

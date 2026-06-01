@@ -57,7 +57,9 @@ fn transcribe(cli: &Cli) -> Result<i32, ScrybeError> {
     // `--jobs` widens decode-ahead, not the number of concurrent inferences.
     let backend = engine::active_backend();
     let (jobs, clamp_note) = batch::resolve_jobs(cli.jobs, backend);
-    let model = model::resolve_model(cli.model, model::total_memory());
+    // Select the default against the job count that will actually run, so a
+    // zero-config default can never be refused by its own memory guard.
+    let model = model::resolve_model(cli.model, model::total_memory(), jobs);
     model::guard_memory(model, jobs)?;
 
     if let Some(code) = validate_model_capabilities(model, cli) {
@@ -109,9 +111,7 @@ fn transcribe(cli: &Cli) -> Result<i32, ScrybeError> {
 
     // Inference runs one file at a time, so the active job gets every core;
     // `--jobs` only widens the decode-ahead pool, never the inference threads.
-    let threads = cli
-        .threads
-        .unwrap_or_else(|| batch::detected_parallelism().max(1));
+    let threads = cli.threads.unwrap_or_else(batch::detected_parallelism);
     let options = engine::TranscribeOptions {
         language: cli.lang.clone(),
         translate: cli.task == Task::Translate,

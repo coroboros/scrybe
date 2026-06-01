@@ -24,9 +24,15 @@ use crate::{audio, output};
 /// Fallback parallelism when the platform cannot report it.
 const DEFAULT_PARALLELISM: usize = 4;
 
-/// The machine's usable parallelism, or a sane default.
+/// The machine's usable parallelism, or a sane default. Always >= 1.
 pub fn detected_parallelism() -> usize {
     std::thread::available_parallelism().map_or(DEFAULT_PARALLELISM, |n| n.get())
+}
+
+/// A progress-bar style from a template, falling back to the default bar if the
+/// template fails to parse. Single source for the two batch bars.
+fn styled_bar(template: &str) -> ProgressStyle {
+    ProgressStyle::with_template(template).unwrap_or_else(|_| ProgressStyle::default_bar())
 }
 
 /// The real-time factor (`audio / wall`) as a display string, or `None` when no
@@ -113,10 +119,7 @@ pub fn run(engine: &Engine, files: &[PathBuf], cfg: &Config<'_>) -> Result<i32, 
 
     let multi = MultiProgress::new();
     let aggregate = multi.add(ProgressBar::new(files.len() as u64));
-    aggregate.set_style(
-        ProgressStyle::with_template("{bar:30} {pos}/{len} files  {elapsed_precise}")
-            .unwrap_or_else(|_| ProgressStyle::default_bar()),
-    );
+    aggregate.set_style(styled_bar("{bar:30} {pos}/{len} files  {elapsed_precise}"));
 
     let pool = rayon::ThreadPoolBuilder::new()
         .num_threads(cfg.jobs)
@@ -167,10 +170,7 @@ pub fn run(engine: &Engine, files: &[PathBuf], cfg: &Config<'_>) -> Result<i32, 
                 |n| n.to_string_lossy().into_owned(),
             );
             let bar = multi.add(ProgressBar::new(100));
-            bar.set_style(
-                ProgressStyle::with_template("  {prefix:.dim} {bar:24} {percent:>3}% {msg}")
-                    .unwrap_or_else(|_| ProgressStyle::default_bar()),
-            );
+            bar.set_style(styled_bar("  {prefix:.dim} {bar:24} {percent:>3}% {msg}"));
             bar.set_prefix(name.clone());
             bar.enable_steady_tick(Duration::from_millis(120));
 
