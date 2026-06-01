@@ -22,8 +22,11 @@ anstream = "1.0.0"
 anstyle = "1.0.14"
 audioadapter-buffers = "3.0.0"
 clap = { version = "4.6.1", features = ["derive"] }
+hf-hub = { version = "0.5.0", default-features = false, features = ["ureq", "rustls-tls"] }
 rubato = "3.0.0"
+sha2 = "0.11.0"
 symphonia = { version = "0.6.0", features = ["mp3", "aac", "alac", "isomp4", "ogg", "vorbis", "flac", "wav", "pcm"] }
+sysinfo = "0.39.3"
 
 [dev-dependencies]
 assert_cmd = "2.2.2"

@@ -27,7 +27,9 @@ cargo install --path .
 scrybe ./recordings          # transcribe a folder
 scrybe talk.mp3 --format srt # one file, SubRip output
 scrybe --dry-run ./in        # resolve the plan without transcribing
-scrybe models list           # show the model family
+scrybe models list           # show the model family, sizes, cache status
+scrybe models pull large-v3  # pre-fetch a model
+scrybe --offline ./in        # cached models only, no network
 ```
 
 Run `scrybe --help` for the full flag list.

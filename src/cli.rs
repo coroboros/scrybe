@@ -70,6 +70,10 @@ pub struct Cli {
     #[arg(long)]
     pub json: bool,
 
+    /// Use only cached models; never access the network.
+    #[arg(long)]
+    pub offline: bool,
+
     #[command(subcommand)]
     pub command: Option<Command>,
 }
@@ -87,8 +91,14 @@ pub enum Command {
 /// Actions under `scrybe models`.
 #[derive(Debug, Subcommand)]
 pub enum ModelsAction {
-    /// List the known Whisper models.
+    /// List the known Whisper models, sizes, and which are cached.
     List,
+    /// Download a model into the cache.
+    Pull { model: Model },
+    /// Remove a cached model.
+    Remove { model: Model },
+    /// Print the model cache directory.
+    Path,
 }
 
 /// The Whisper model family scrybe can run.

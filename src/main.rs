@@ -5,10 +5,11 @@ mod audio;
 mod cli;
 mod color;
 mod error;
+mod model;
 
 use clap::{Parser, ValueEnum};
 
-use crate::cli::{Cli, Command, Model, ModelsAction};
+use crate::cli::{Cli, Command, Model, ModelsAction, Task};
 use crate::error::ScrybeError;
 
 /// Exit code for argument/usage problems, matching clap's own convention.
@@ -35,7 +36,7 @@ fn run() -> i32 {
 fn dispatch(cli: &Cli) -> Result<i32, ScrybeError> {
     match &cli.command {
         Some(Command::Models { action }) => {
-            run_models(action);
+            run_models(action, cli.offline)?;
             Ok(0)
         }
         None => transcribe(cli),
@@ -54,6 +55,13 @@ fn transcribe(cli: &Cli) -> Result<i32, ScrybeError> {
         if !path.exists() {
             return Err(ScrybeError::FileNotFound { path: path.clone() });
         }
+    }
+
+    // Refuse before doing work if the model + job count cannot fit in memory.
+    model::guard_memory(cli.model, cli.jobs.unwrap_or(1))?;
+
+    if let Some(code) = validate_model_capabilities(cli) {
+        return Ok(code);
     }
 
     let files = audio::discover(&cli.paths, cli.recursive);
@@ -108,9 +116,64 @@ fn transcribe(cli: &Cli) -> Result<i32, ScrybeError> {
     Ok(0)
 }
 
-fn run_models(action: &ModelsAction) {
+/// Reject model + task/language combinations the model cannot serve, before any
+/// work runs. These are configuration errors, so they exit like a usage error.
+fn validate_model_capabilities(cli: &Cli) -> Option<i32> {
+    let info = model::info(cli.model);
+    if cli.task == Task::Translate && !info.can_translate {
+        eprint_error(&format!(
+            "model `{}` cannot translate; use a translation-capable model such as `large-v3`",
+            cli.model
+        ));
+        return Some(USAGE_ERROR);
+    }
+    if let Some(lang) = cli.lang.as_deref()
+        && !lang.eq_ignore_ascii_case("en")
+        && !info.multilingual
+    {
+        eprint_error(&format!(
+            "model `{}` is English-only; it cannot transcribe `--lang {lang}`",
+            cli.model
+        ));
+        return Some(USAGE_ERROR);
+    }
+    None
+}
+
+fn run_models(action: &ModelsAction, offline: bool) -> Result<(), ScrybeError> {
     match action {
-        ModelsAction::List => list_models(),
+        ModelsAction::List => {
+            list_models();
+            Ok(())
+        }
+        ModelsAction::Pull { model } => {
+            let path = model::ensure_available(*model, offline)?;
+            anstream::println!(
+                "{} {}",
+                color::paint(color::SUCCESS, "pulled"),
+                path.display()
+            );
+            Ok(())
+        }
+        ModelsAction::Remove { model } => {
+            match model::cached_path(*model) {
+                Some(path) => {
+                    if let Ok(real) = std::fs::canonicalize(&path) {
+                        let _ = std::fs::remove_file(&real);
+                    }
+                    let _ = std::fs::remove_file(&path);
+                    anstream::println!("{} {model}", color::paint(color::SUCCESS, "removed"));
+                }
+                None => {
+                    anstream::println!("{} {model} is not cached", color::paint(color::DIM, "—"))
+                }
+            }
+            Ok(())
+        }
+        ModelsAction::Path => {
+            anstream::println!("{}", model::cache_dir().display());
+            Ok(())
+        }
     }
 }
 
@@ -121,12 +184,22 @@ fn list_models() {
         color::paint(color::DIM, &format!("(default: {})", cli::DEFAULT_MODEL)),
     );
     for model in Model::value_variants() {
-        let marker = if *model == cli::DEFAULT_MODEL {
-            color::paint(color::SUCCESS, "  (default)")
+        let info = model::info(*model);
+        let cached = if model::cached_path(*model).is_some() {
+            color::paint(color::SUCCESS, "cached")
+        } else {
+            color::paint(color::DIM, "—")
+        };
+        let default = if *model == cli::DEFAULT_MODEL {
+            color::paint(color::DIM, "  (default)")
         } else {
             String::new()
         };
-        anstream::println!("  {model}{marker}");
+        anstream::println!(
+            "  {:<18} {:>9}  {cached}{default}",
+            model.to_string(),
+            model::human_size(info.size),
+        );
     }
 }
 
@@ -148,7 +221,7 @@ fn print_plan(cli: &Cli) {
         .map_or_else(|| "sidecar".to_owned(), |dir| dir.display().to_string());
 
     let config = format!(
-        "model={} task={} lang={} format={} jobs={} threads={} out-dir={} decoder={} recursive={} force={} json={} dry-run={}",
+        "model={} task={} lang={} format={} jobs={} threads={} out-dir={} decoder={} recursive={} force={} json={} offline={} dry-run={}",
         cli.model,
         cli.task,
         lang,
@@ -160,6 +233,7 @@ fn print_plan(cli: &Cli) {
         cli.recursive,
         cli.force,
         cli.json,
+        cli.offline,
         cli.dry_run,
     );
     anstream::println!(
@@ -170,7 +244,11 @@ fn print_plan(cli: &Cli) {
 }
 
 fn print_error(err: &ScrybeError) {
-    anstream::eprintln!("{} {err}", color::paint(color::ERROR, "error:"));
+    eprint_error(&err.to_string());
+}
+
+fn eprint_error(message: &str) {
+    anstream::eprintln!("{} {message}", color::paint(color::ERROR, "error:"));
 }
 
 fn print_usage_hint() {
