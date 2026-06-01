@@ -71,26 +71,47 @@ pub fn outputs_up_to_date(input: &Path, formats: &[Format], out_dir: Option<&Pat
 /// different folders). Returns an actionable message for the first collision, or
 /// `None` when every output is unique — so the caller can fail loud rather than
 /// silently overwrite.
+///
+/// Keyed by the case-folded output path: exact duplicates collide on every
+/// filesystem, while paths differing only in case (`Audio.txt` vs `audio.txt`)
+/// collide on a case-insensitive one — macOS and the Windows default, the primary
+/// targets. Both silently overwrite, so both fail loud here. The fold is an ASCII
+/// lowercasing, a close approximation of those filesystems' case rules; the cost of
+/// being wrong is a fail-loud refusal with a fix, never a lost transcript.
 pub fn first_collision(
     inputs: &[PathBuf],
     formats: &[Format],
     out_dir: Option<&Path>,
 ) -> Option<String> {
-    let mut seen: std::collections::HashMap<PathBuf, &Path> = std::collections::HashMap::new();
+    let mut seen: std::collections::HashMap<String, (PathBuf, &Path)> =
+        std::collections::HashMap::new();
     for input in inputs {
+        let input = input.as_path();
         for &format in formats {
             let out = output_path(input, format, out_dir);
-            match seen.get(&out) {
-                Some(&prev) if prev != input.as_path() => {
-                    return Some(format!(
-                        "{} and {} both write {}",
-                        prev.display(),
-                        input.display(),
-                        out.display(),
-                    ));
+            let key = out.to_string_lossy().to_lowercase();
+            match seen.get(&key) {
+                Some((prev_out, prev_in)) if *prev_in != input => {
+                    let message = if *prev_out == out {
+                        format!(
+                            "{} and {} both write {}",
+                            prev_in.display(),
+                            input.display(),
+                            out.display(),
+                        )
+                    } else {
+                        format!(
+                            "{} and {} write {} and {}, which collide on a case-insensitive filesystem",
+                            prev_in.display(),
+                            input.display(),
+                            prev_out.display(),
+                            out.display(),
+                        )
+                    };
+                    return Some(message);
                 }
                 _ => {
-                    seen.insert(out, input);
+                    seen.entry(key).or_insert((out, input));
                 }
             }
         }
@@ -350,6 +371,25 @@ mod tests {
         let ep1 = PathBuf::from("/ep01/audio.mp3");
         let ep2 = PathBuf::from("/ep02/audio.mp3");
         assert!(first_collision(&[ep1, ep2], &[Format::Json], Some(Path::new("/out"))).is_some());
+    }
+
+    #[test]
+    fn detects_case_only_collisions() {
+        // Two inputs whose outputs differ only in case (Audio.txt vs audio.txt) would
+        // overwrite each other on a case-insensitive filesystem (macOS/Windows). The
+        // guard must catch it and say *why*, distinct from the exact-collision message.
+        let upper = PathBuf::from("/in/Audio.wav");
+        let lower = PathBuf::from("/in/audio.m4a");
+        let msg = first_collision(&[upper, lower], &[Format::Txt], None)
+            .expect("case-only outputs must be flagged");
+        assert!(
+            msg.contains("case-insensitive"),
+            "case collision must explain the trigger: {msg}"
+        );
+        // Outputs that differ beyond case are independent — no false positive.
+        let a = PathBuf::from("/in/alpha.wav");
+        let b = PathBuf::from("/in/beta.wav");
+        assert!(first_collision(&[a, b], &[Format::Txt], None).is_none());
     }
 
     #[test]

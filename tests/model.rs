@@ -43,6 +43,20 @@ fn zero_config_oversized_jobs_refused_with_hint() {
 }
 
 #[test]
+fn json_single_file_is_still_memory_guarded() {
+    // The single-file --json branch returns before the batch banner, but resolve →
+    // guard runs ahead of it, so an oversized --jobs must still exit 12 on the json
+    // fast path — the early return never bypasses the guard. Network-free: the guard
+    // fails before any model load.
+    scrybe()
+        .args(["--model", "large-v3", "--jobs", "1200", "--json", WAV])
+        .assert()
+        .failure()
+        .code(12)
+        .stderr(predicate::str::contains("not enough memory"));
+}
+
+#[test]
 fn turbo_cannot_translate() {
     scrybe()
         .args(["--model", "large-v3-turbo", "--task", "translate", WAV])

@@ -34,3 +34,36 @@ pub fn ffmpeg_available() -> bool {
         .output()
         .is_ok_and(|o| o.status.success())
 }
+
+/// The cached tiny-model path, or `None` to skip — but a hard failure when the
+/// environment is expected to have pre-fetched it (`SCRYBE_REQUIRE_MODEL` set, as CI
+/// does). An early `return` on a bare `tiny_cached()` makes a model-gated test *pass*
+/// while exercising nothing; this turns that silent green into a loud failure where a
+/// model is guaranteed, while still skipping cleanly on an offline developer machine.
+/// The skip message lives here once, so every gate shares one shape.
+pub fn require_model_or_skip() -> Option<std::path::PathBuf> {
+    if let Some(path) = tiny_model_path() {
+        return Some(path);
+    }
+    assert!(
+        std::env::var_os("SCRYBE_REQUIRE_MODEL").is_none(),
+        "tiny model required (SCRYBE_REQUIRE_MODEL is set) but not cached — run `scrybe models pull tiny`",
+    );
+    eprintln!("skipping: tiny model not cached — run `scrybe models pull tiny`");
+    None
+}
+
+/// Like [`require_model_or_skip`] for `ffmpeg`: a clean skip when it is absent, but a
+/// hard failure under `SCRYBE_REQUIRE_FFMPEG` (CI installs ffmpeg), so the ffmpeg
+/// decode path can never silently no-op where it is guaranteed present.
+pub fn require_ffmpeg_or_skip() -> bool {
+    if ffmpeg_available() {
+        return true;
+    }
+    assert!(
+        std::env::var_os("SCRYBE_REQUIRE_FFMPEG").is_none(),
+        "ffmpeg required (SCRYBE_REQUIRE_FFMPEG is set) but not on PATH",
+    );
+    eprintln!("skipping: ffmpeg not on PATH");
+    false
+}

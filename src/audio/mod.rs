@@ -59,6 +59,11 @@ fn downmix(interleaved: Vec<f32>, channels: u16) -> Vec<f32> {
     if channels == 1 {
         return interleaved;
     }
+    // Both decode paths yield whole interleaved frames — symphonia emits
+    // frames × channels samples, the ffmpeg path forces mono (`-ac 1`) — so the
+    // buffer length is a multiple of `channels` and `chunks_exact` discards nothing
+    // real. A lone trailing sample only appears on malformed input, where dropping
+    // the incomplete frame is safer than fabricating one.
     interleaved
         .chunks_exact(channels)
         .map(|frame| frame.iter().sum::<f32>() / channels as f32)

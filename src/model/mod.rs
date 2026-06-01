@@ -103,6 +103,16 @@ pub fn info(model: Model) -> ModelInfo {
 /// ffmpeg` (which streams straight to 16 kHz mono) as the escape for large files.
 pub(crate) const DECODE_BUFFER: u64 = 1024 * 1024 * 1024;
 
+/// Resident memory for `model`'s loaded context: weights plus a ~half-weights
+/// inference working set, held once (one shared context, serial inference). The
+/// single source for this derivation, shared by the peak-memory estimate and the
+/// max-jobs solver so they cannot disagree. Saturating so an outsized model size
+/// can't overflow.
+fn resident_memory(model: Model) -> u64 {
+    let weights = info(model).size;
+    weights.saturating_add(weights / 2)
+}
+
 /// Estimated peak memory transcribing `model` at `jobs` concurrent decodes. The
 /// engine loads one shared model context and runs inference serially, so the
 /// weights and inference working set are resident once; only the in-flight decode
@@ -110,14 +120,10 @@ pub(crate) const DECODE_BUFFER: u64 = 1024 * 1024 * 1024;
 /// model copy (the spec's premise) because that copy never happens — fewer false
 /// refusals, still OOM-safe.
 fn estimated_memory(model: Model, jobs: usize) -> u64 {
-    let weights = info(model).size;
-    let working_set = weights / 2;
     // Saturating throughout so an absurd `--jobs` can't overflow (debug panic /
     // release wrap); the result clamps to u64::MAX, which the guard reads as
     // "won't fit".
-    weights
-        .saturating_add(working_set)
-        .saturating_add(DECODE_BUFFER.saturating_mul(jobs.max(1) as u64))
+    resident_memory(model).saturating_add(DECODE_BUFFER.saturating_mul(jobs.max(1) as u64))
 }
 
 /// Fraction of detected RAM a run may use, leaving headroom for the OS and other
@@ -163,8 +169,7 @@ pub fn resolve_model(explicit: Option<Model>, total_ram: Option<u64>, jobs: usiz
 /// so a zero-config run is never refused by its own guard.
 pub(crate) fn max_jobs_fitting(total_ram: u64, model: Model) -> usize {
     let budget = memory_budget(total_ram);
-    let info = info(model);
-    let resident = info.size + info.size / 2; // weights + working set, resident once
+    let resident = resident_memory(model);
     ((budget.saturating_sub(resident) / DECODE_BUFFER) as usize).max(1)
 }
 
@@ -276,7 +281,16 @@ fn materialize_vad(dir: &std::path::Path) -> Result<PathBuf, ScrybeError> {
         detail: format!("could not materialize the bundled VAD model: {e}"),
     };
     std::fs::create_dir_all(dir).map_err(&io_error)?;
-    std::fs::write(&path, SILERO_VAD_BYTES).map_err(&io_error)?;
+    // Write to a per-process temp file, then atomically rename it into place, so a
+    // concurrent or interrupted run never reads a half-written model (which would
+    // fail the SHA gate or load as corrupt). Rename within one directory is atomic;
+    // the loser of a race just replaces the file with byte-identical contents.
+    let tmp = dir.join(format!("{VAD_FILE}.{}.tmp", std::process::id()));
+    std::fs::write(&tmp, SILERO_VAD_BYTES).map_err(&io_error)?;
+    std::fs::rename(&tmp, &path).map_err(|e| {
+        let _ = std::fs::remove_file(&tmp);
+        io_error(e)
+    })?;
     Ok(path)
 }
 
@@ -359,15 +373,18 @@ fn sha256_matches(
     expected: &str,
     label: &str,
 ) -> Result<bool, ScrybeError> {
-    let io_error = |e: std::io::Error| ScrybeError::ModelDownloadFailed {
+    // Names a read fault as a download failure (a cached blob we can't read is, to
+    // the user, a fetch problem); distinct from `materialize_vad`'s `io_error`, which
+    // builds the generic `Io` variant.
+    let read_error = |e: std::io::Error| ScrybeError::ModelDownloadFailed {
         model: label.to_owned(),
         detail: format!("{}: {e}", path.display()),
     };
-    let mut file = std::fs::File::open(path).map_err(&io_error)?;
+    let mut file = std::fs::File::open(path).map_err(&read_error)?;
     let mut hasher = Sha256::new();
     let mut buf = vec![0u8; 1 << 16];
     loop {
-        let read = file.read(&mut buf).map_err(&io_error)?;
+        let read = file.read(&mut buf).map_err(&read_error)?;
         if read == 0 {
             break;
         }

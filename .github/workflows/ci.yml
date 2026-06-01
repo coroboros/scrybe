@@ -50,5 +50,11 @@ jobs:
       - name: Pre-fetch the tiny model
         run: cargo run --quiet -- models pull tiny
 
+      # The model is pre-fetched above and ffmpeg is installed, so here their
+      # absence is a hard failure, not a silent skip — a model/ffmpeg-gated test
+      # can never report green while exercising nothing.
       - name: Test
+        env:
+          SCRYBE_REQUIRE_MODEL: "1"
+          SCRYBE_REQUIRE_FFMPEG: "1"
         run: cargo test

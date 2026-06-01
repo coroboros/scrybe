@@ -28,8 +28,10 @@ pub enum ScrybeError {
     TranscriptionFailed { detail: String },
     /// An input path does not exist.
     FileNotFound { path: PathBuf },
-    /// Some files in a batch failed while others succeeded.
-    PartialBatchFailure { failed: usize, total: usize },
+    /// Some files in a batch failed while others succeeded. `processed` counts the
+    /// files actually attempted (a Ctrl-C may stop the run before every input is
+    /// reached), so it is not necessarily the input total.
+    PartialBatchFailure { failed: usize, processed: usize },
     /// The run was stopped early (Ctrl-C) before every file was processed.
     Interrupted { completed: usize, total: usize },
     /// An unexpected I/O failure, such as writing an output file.
@@ -96,9 +98,9 @@ impl fmt::Display for ScrybeError {
             Self::FileNotFound { path } => {
                 write!(f, "no such file or directory: {}", path.display())
             }
-            Self::PartialBatchFailure { failed, total } => write!(
+            Self::PartialBatchFailure { failed, processed } => write!(
                 f,
-                "{failed} of {total} files failed; the rest completed. See the per-file lines above.",
+                "{failed} of {processed} processed files failed; the rest completed. See the per-file lines above.",
             ),
             Self::Interrupted { completed, total } => write!(
                 f,
@@ -172,7 +174,7 @@ mod tests {
             (
                 ScrybeError::PartialBatchFailure {
                     failed: 1,
-                    total: 2,
+                    processed: 2,
                 },
                 20,
             ),
@@ -239,7 +241,7 @@ mod tests {
             (
                 ScrybeError::PartialBatchFailure {
                     failed: 1,
-                    total: 2,
+                    processed: 2,
                 },
                 "1 of 2",
             ),

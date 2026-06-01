@@ -10,7 +10,7 @@
 use predicates::prelude::*;
 
 mod common;
-use common::{ffmpeg_available, scrybe, tiny_cached};
+use common::{require_ffmpeg_or_skip, require_model_or_skip, scrybe};
 
 /// ANSI escape introducer — its presence means color was emitted.
 const ESC: &str = "\u{1b}";
@@ -111,8 +111,7 @@ fn zero_jobs_is_clamped_not_panicked() {
 
 #[test]
 fn malformed_audio_fails_without_panicking() {
-    if !tiny_cached() {
-        eprintln!("skipping: tiny model not cached");
+    if require_model_or_skip().is_none() {
         return;
     }
     // Garbage bytes with an audio extension reach the decoder (scrybe's own path),
@@ -133,8 +132,7 @@ fn malformed_audio_fails_without_panicking() {
 
 #[test]
 fn single_file_unsupported_codec_exits_10() {
-    if !tiny_cached() {
-        eprintln!("skipping: tiny model not cached");
+    if require_model_or_skip().is_none() {
         return;
     }
     // The single-file --json path decodes directly (not via batch), so a decode
@@ -160,8 +158,7 @@ fn missing_input_path_exits_file_not_found() {
 
 #[test]
 fn json_single_file_streams_clean_stdout() {
-    if !tiny_cached() {
-        eprintln!("skipping: tiny model not cached");
+    if require_model_or_skip().is_none() {
         return;
     }
     // stdout must be only the JSON document — the status banner goes to stderr.
@@ -191,8 +188,7 @@ fn json_single_file_streams_clean_stdout() {
 
 #[test]
 fn out_dir_redirects_output_away_from_input() {
-    if !tiny_cached() {
-        eprintln!("skipping: tiny model not cached");
+    if require_model_or_skip().is_none() {
         return;
     }
     let out = tempfile::tempdir().unwrap();
@@ -230,8 +226,7 @@ fn dry_run_lists_files_without_writing() {
 
 #[test]
 fn mixed_batch_reports_failure_and_exits_20() {
-    if !tiny_cached() {
-        eprintln!("skipping: tiny model not cached");
+    if require_model_or_skip().is_none() {
         return;
     }
     let out = tempfile::tempdir().unwrap();
@@ -262,8 +257,7 @@ fn mixed_batch_reports_failure_and_exits_20() {
 
 #[test]
 fn skips_up_to_date_output_unless_forced() {
-    if !tiny_cached() {
-        eprintln!("skipping: tiny model not cached");
+    if require_model_or_skip().is_none() {
         return;
     }
     let out = tempfile::tempdir().unwrap();
@@ -303,8 +297,7 @@ fn skips_up_to_date_output_unless_forced() {
 
 #[test]
 fn silence_produces_no_transcript() {
-    if !tiny_cached() {
-        eprintln!("skipping: tiny model not cached");
+    if require_model_or_skip().is_none() {
         return;
     }
     let out = tempfile::tempdir().unwrap();
@@ -324,8 +317,7 @@ fn silence_produces_no_transcript() {
 
 #[test]
 fn json_multi_file_writes_sidecars_into_created_out_dir() {
-    if !tiny_cached() {
-        eprintln!("skipping: tiny model not cached");
+    if require_model_or_skip().is_none() {
         return;
     }
     let parent = tempfile::tempdir().unwrap();
@@ -360,8 +352,7 @@ fn json_multi_file_writes_sidecars_into_created_out_dir() {
 #[cfg(unix)]
 #[test]
 fn ctrl_c_stops_gracefully_with_partial_exit() {
-    if !tiny_cached() {
-        eprintln!("skipping: tiny model not cached");
+    if require_model_or_skip().is_none() {
         return;
     }
     use std::process::{Command as Proc, Stdio};
@@ -499,8 +490,7 @@ fn colliding_outputs_fail_fast_with_usage_error() {
 
 #[test]
 fn default_writes_sidecar_next_to_input() {
-    if !tiny_cached() {
-        eprintln!("skipping: tiny model not cached");
+    if require_model_or_skip().is_none() {
         return;
     }
     // No --out-dir: the sidecar lands next to the input. Copy into a tempdir so
@@ -568,12 +558,10 @@ fn threads_override_is_reflected_in_the_plan_banner() {
 
 #[test]
 fn decoder_ffmpeg_wires_through_the_binary() {
-    if !ffmpeg_available() {
-        eprintln!("skipping: ffmpeg not on PATH");
+    if !require_ffmpeg_or_skip() {
         return;
     }
-    if !tiny_cached() {
-        eprintln!("skipping: tiny model not cached");
+    if require_model_or_skip().is_none() {
         return;
     }
     // he-aac.m4a needs ffmpeg (symphonia rejects it), so success proves the
@@ -601,8 +589,7 @@ fn decoder_ffmpeg_wires_through_the_binary() {
 
 #[test]
 fn vtt_and_tsv_formats_write_well_formed_sidecars() {
-    if !tiny_cached() {
-        eprintln!("skipping: tiny model not cached");
+    if require_model_or_skip().is_none() {
         return;
     }
     // The two WS-6 writers with no end-to-end coverage: drive them through

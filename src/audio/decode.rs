@@ -32,6 +32,11 @@ const MAX_SOURCE_PCM_BYTES: u64 = crate::model::DECODE_BUFFER;
 /// The ceiling expressed in f32 samples, for the in-loop/streaming sample counts.
 const MAX_SOURCE_SAMPLES: usize = (MAX_SOURCE_PCM_BYTES / SAMPLE_BYTES) as usize;
 
+/// Initial f32 capacity for the streamed ffmpeg decode — ~4 MB. Amortizes the early
+/// reallocs on a long decode without a large speculative allocation; the in-loop
+/// ceiling still bounds real growth, and a smaller `max_samples` caps it below this.
+const STREAM_PRESIZE_SAMPLES: usize = 1024 * 1024;
+
 /// Interleaved f32 PCM plus the source stream's rate and channel count.
 pub struct Decoded {
     pub samples: Vec<f32>,
@@ -178,7 +183,7 @@ fn read_f32le_stream<R: std::io::Read>(
     mut src: R,
     max_samples: usize,
 ) -> Result<Vec<f32>, StreamError> {
-    let mut samples: Vec<f32> = Vec::new();
+    let mut samples: Vec<f32> = Vec::with_capacity(STREAM_PRESIZE_SAMPLES.min(max_samples));
     let mut pending: Vec<u8> = Vec::new(); // < 4 leftover bytes spanning reads
     let mut buf = [0u8; 1 << 16];
     loop {
@@ -522,11 +527,17 @@ mod tests {
         // Overflow error (exit 10), not hang on the stderr-reader join. Under the
         // previous join-before-kill ordering this hangs — a regression fails via the
         // test timeout instead of passing.
-        if !Command::new("ffmpeg")
+        let ffmpeg_ok = Command::new("ffmpeg")
             .arg("-version")
             .output()
-            .is_ok_and(|o| o.status.success())
-        {
+            .is_ok_and(|o| o.status.success());
+        if !ffmpeg_ok {
+            // Hard-fail where ffmpeg is guaranteed (CI sets SCRYBE_REQUIRE_FFMPEG) so
+            // this regression can't silently no-op; skip cleanly otherwise.
+            assert!(
+                std::env::var_os("SCRYBE_REQUIRE_FFMPEG").is_none(),
+                "ffmpeg required (SCRYBE_REQUIRE_FFMPEG is set) but not on PATH",
+            );
             eprintln!("skipping: ffmpeg not on PATH");
             return;
         }

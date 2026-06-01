@@ -3,8 +3,9 @@
 //! Transcribes a committed speech clip with the tiny model on the CPU backend
 //! and checks the result against a reference within a word-error-rate tolerance
 //! (float output is backend/quant-dependent, so an exact match is wrong). Skips
-//! cleanly when the tiny model is not cached, so CI fetches it once and offline
-//! runs do not fail.
+//! cleanly when the tiny model is not cached on a developer machine; under CI
+//! (`SCRYBE_REQUIRE_MODEL`, where the model is pre-fetched) a missing model is a
+//! hard failure, so a green run can never mean "exercised nothing".
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
 use std::path::Path;
@@ -14,15 +15,14 @@ use scrybe::cli::Decoder;
 use scrybe::engine::{Engine, TranscribeOptions};
 
 mod common;
-use common::tiny_model_path;
+use common::require_model_or_skip;
 
 const REFERENCE: &str = "the quick brown fox jumps over the lazy dog";
 const WER_TOLERANCE: f64 = 0.34;
 
 #[test]
 fn english_clip_within_wer_tolerance() {
-    let Some(model_path) = tiny_model_path() else {
-        eprintln!("skipping: tiny model not cached — run `scrybe models pull tiny`");
+    let Some(model_path) = require_model_or_skip() else {
         return;
     };
 
@@ -66,8 +66,7 @@ fn vad_floor_transcribes_through_the_engine() {
     // The mandated VAD floor is always on in production (main wires
     // `ensure_vad()` into `Engine::load`). The WER test above loads with VAD off,
     // so this is the only coverage of the engine's VAD arm end-to-end.
-    let Some(model_path) = tiny_model_path() else {
-        eprintln!("skipping: tiny model not cached — run `scrybe models pull tiny`");
+    let Some(model_path) = require_model_or_skip() else {
         return;
     };
 
@@ -105,8 +104,7 @@ fn translate_task_changes_output_through_the_engine() {
     // differ. A dropped or inverted `set_translate` makes them identical and fails
     // here. Differential (not an exact match) so it does not depend on tiny's weak
     // translation quality.
-    let Some(model_path) = tiny_model_path() else {
-        eprintln!("skipping: tiny model not cached — run `scrybe models pull tiny`");
+    let Some(model_path) = require_model_or_skip() else {
         return;
     };
 
@@ -148,8 +146,7 @@ fn auto_detects_and_reports_french() {
     // WS-4: a non-English clip with no --lang is auto-detected and reported.
     // `language: None` routes through full_lang_id_from_state + get_lang_str (the
     // detect arm), not the echo arm an explicit --lang would take.
-    let Some(model_path) = tiny_model_path() else {
-        eprintln!("skipping: tiny model not cached — run `scrybe models pull tiny`");
+    let Some(model_path) = require_model_or_skip() else {
         return;
     };
     let engine = Engine::load(&model_path, None).expect("load tiny model");
@@ -182,8 +179,7 @@ fn uppercase_lang_is_normalized_not_silently_collapsed() {
     // case-sensitively. Without normalization an uppercase code yields a near-empty
     // transcript and a mis-reported language. Assert the engine lowercases it: full
     // transcript preserved, language reported as `en`.
-    let Some(model_path) = tiny_model_path() else {
-        eprintln!("skipping: tiny model not cached — run `scrybe models pull tiny`");
+    let Some(model_path) = require_model_or_skip() else {
         return;
     };
     let engine = Engine::load(&model_path, None).expect("load tiny model");
@@ -228,8 +224,7 @@ fn long_trailing_silence_does_not_hallucinate_or_loop() {
     // assert the achievable guarantee: no loop and the gap stays near-empty — not a
     // literal zero. Build speech + ~30 s of silence at runtime (no multi-MB fixture)
     // through the production path (VAD on, as main wires it).
-    let Some(model_path) = tiny_model_path() else {
-        eprintln!("skipping: tiny model not cached — run `scrybe models pull tiny`");
+    let Some(model_path) = require_model_or_skip() else {
         return;
     };
     let vad_path = scrybe::model::ensure_vad().expect("bundled VAD materializes");
@@ -292,8 +287,7 @@ fn empty_pcm_surfaces_as_transcription_failed_exit_16() {
     // Empty PCM is the deterministic way to force a real `full()` fault: against the
     // pinned whisper-rs it returns NoSamples → run_error → TranscriptionFailed (16),
     // so a future change re-routing runtime faults to 13/15 would fail here.
-    let Some(model_path) = tiny_model_path() else {
-        eprintln!("skipping: tiny model not cached — run `scrybe models pull tiny`");
+    let Some(model_path) = require_model_or_skip() else {
         return;
     };
     let engine = Engine::load(&model_path, None).expect("load tiny model");

@@ -237,10 +237,7 @@ fn batch_exit_code(
         .filter(|r| matches!(r.outcome, Outcome::Failed(_)))
         .count();
     if failed > 0 {
-        Err(ScrybeError::PartialBatchFailure {
-            failed,
-            total: processed,
-        })
+        Err(ScrybeError::PartialBatchFailure { failed, processed })
     } else if interrupted && processed < total {
         Err(ScrybeError::Interrupted {
             completed: processed,
@@ -457,7 +454,7 @@ mod tests {
             batch_exit_code(&results, false, 2),
             Err(ScrybeError::PartialBatchFailure {
                 failed: 1,
-                total: 2
+                processed: 2
             })
         ));
     }
