@@ -149,13 +149,27 @@ fn json_single_file_streams_clean_stdout() {
     }
     // stdout must be only the JSON document — the status banner goes to stderr.
     // No --lang, so "en" here also exercises the auto-detect language arm.
-    scrybe()
+    let output = scrybe()
         .args(["--model", "tiny", "--json", "tests/fixtures/speech/en.wav"])
-        .assert()
-        .success()
-        .stdout(predicate::str::contains("\"schema_version\": 1"))
-        .stdout(predicate::str::contains("\"language\": \"en\""))
-        .stdout(predicate::str::contains("model=").not());
+        .output()
+        .unwrap();
+    assert!(output.status.success());
+    let stdout = String::from_utf8(output.stdout).unwrap();
+    assert!(
+        !stdout.contains("model="),
+        "status banner leaked into stdout:\n{stdout}"
+    );
+    // Parse the document so the Meta wiring (resolved model + real duration) is
+    // pinned, not just substrings — a swapped/wrong/hardcoded field then fails.
+    let doc: serde_json::Value = serde_json::from_str(&stdout).expect("stdout is valid JSON");
+    assert_eq!(doc["schema_version"], 1);
+    assert_eq!(doc["language"], "en"); // auto-detect arm
+    assert_eq!(doc["model"], "tiny"); // resolved model name, wired from the run
+    assert!(
+        doc["duration"].as_f64().is_some_and(|d| d > 0.0),
+        "duration not the decoded length: {}",
+        doc["duration"]
+    );
 }
 
 #[test]

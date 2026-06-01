@@ -254,7 +254,13 @@ pub fn ensure_vad() -> Result<PathBuf, ScrybeError> {
     {
         return Ok(path);
     }
-    let dir = cache_dir().join("scrybe");
+    materialize_vad(&cache_dir().join("scrybe"))
+}
+
+/// Materialize the bundled VAD model into `dir`, reusing an already-present,
+/// SHA-matching copy without rewriting. Split out (dir-parameterized) so the
+/// reuse branch is testable against an isolated directory.
+fn materialize_vad(dir: &std::path::Path) -> Result<PathBuf, ScrybeError> {
     let path = dir.join(VAD_FILE);
     if path.exists() && sha256_matches(&path, VAD_SHA256, "silero-vad").unwrap_or(false) {
         return Ok(path);
@@ -262,7 +268,7 @@ pub fn ensure_vad() -> Result<PathBuf, ScrybeError> {
     let io_error = |e: std::io::Error| ScrybeError::Io {
         detail: format!("could not materialize the bundled VAD model: {e}"),
     };
-    std::fs::create_dir_all(&dir).map_err(&io_error)?;
+    std::fs::create_dir_all(dir).map_err(&io_error)?;
     std::fs::write(&path, SILERO_VAD_BYTES).map_err(&io_error)?;
     Ok(path)
 }
@@ -566,6 +572,24 @@ mod tests {
         assert!(info(Model::LargeV3).can_translate);
         assert!(!info(Model::LargeV3Turbo).can_translate);
         assert!(!info(Model::DistilLargeV35).can_translate);
+    }
+
+    #[test]
+    fn materialize_vad_reuses_an_existing_valid_copy() {
+        // First call writes the bundled model; the second must take the cache-hit
+        // early return and reuse it (mtime unchanged), not rewrite. Isolated tempdir
+        // so it's deterministic and parallel-safe.
+        let dir = tempfile::tempdir().unwrap();
+        let first = materialize_vad(dir.path()).expect("first materialization");
+        let mtime = first.metadata().unwrap().modified().unwrap();
+        let second = materialize_vad(dir.path()).expect("reuse");
+        assert_eq!(first, second);
+        assert_eq!(
+            second.metadata().unwrap().modified().unwrap(),
+            mtime,
+            "a valid cached VAD must be reused, not rewritten"
+        );
+        assert!(sha256_matches(&second, VAD_SHA256, "silero-vad").unwrap());
     }
 
     #[test]
