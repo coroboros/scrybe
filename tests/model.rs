@@ -5,18 +5,12 @@
 //! the `models` subcommands that need no network.
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
-use assert_cmd::Command;
 use predicates::prelude::*;
 
-const WAV: &str = "tests/fixtures/audio/tone.wav";
+mod common;
+use common::scrybe;
 
-fn scrybe() -> Command {
-    let mut cmd = Command::cargo_bin("scrybe").unwrap();
-    cmd.env_remove("NO_COLOR")
-        .env_remove("CLICOLOR")
-        .env_remove("CLICOLOR_FORCE");
-    cmd
-}
+const WAV: &str = "tests/fixtures/audio/tone.wav";
 
 #[test]
 fn memory_guard_refuses_oversized_run() {

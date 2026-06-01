@@ -65,6 +65,38 @@ pub fn outputs_up_to_date(input: &Path, formats: &[Format], out_dir: Option<&Pat
     })
 }
 
+/// Find two distinct inputs that would write the same output file (e.g. `a.wav`
+/// and `a.m4a` → `a.txt`, or `--out-dir` flattening equal-stem files from
+/// different folders). Returns an actionable message for the first collision, or
+/// `None` when every output is unique — so the caller can fail loud rather than
+/// silently overwrite.
+pub fn first_collision(
+    inputs: &[PathBuf],
+    formats: &[Format],
+    out_dir: Option<&Path>,
+) -> Option<String> {
+    let mut seen: std::collections::HashMap<PathBuf, &Path> = std::collections::HashMap::new();
+    for input in inputs {
+        for &format in formats {
+            let out = output_path(input, format, out_dir);
+            match seen.get(&out) {
+                Some(&prev) if prev != input.as_path() => {
+                    return Some(format!(
+                        "{} and {} both write {}",
+                        prev.display(),
+                        input.display(),
+                        out.display(),
+                    ));
+                }
+                _ => {
+                    seen.insert(out, input);
+                }
+            }
+        }
+    }
+    None
+}
+
 /// The output path for one format: `<stem>.<ext>` in `out_dir` or beside the input.
 fn output_path(input: &Path, format: Format, out_dir: Option<&Path>) -> PathBuf {
     let stem = input.file_stem().unwrap_or(input.as_os_str());
@@ -267,6 +299,21 @@ mod tests {
     #[test]
     fn txt_is_one_segment_per_line() {
         assert_eq!(render_txt(&transcript()), "Hello world\nsecond line\n");
+    }
+
+    #[test]
+    fn detects_output_collisions() {
+        let wav = PathBuf::from("/x/talk.wav");
+        let m4a = PathBuf::from("/x/talk.m4a");
+        // Same stem, different container → both write talk.txt.
+        assert!(first_collision(&[wav.clone(), m4a], &[Format::Txt], None).is_some());
+        // Distinct stems → no collision.
+        let other = PathBuf::from("/x/other.wav");
+        assert!(first_collision(&[wav, other], &[Format::Txt], None).is_none());
+        // --out-dir flattening equal-stem files from different folders.
+        let ep1 = PathBuf::from("/ep01/audio.mp3");
+        let ep2 = PathBuf::from("/ep02/audio.mp3");
+        assert!(first_collision(&[ep1, ep2], &[Format::Json], Some(Path::new("/out"))).is_some());
     }
 
     #[test]

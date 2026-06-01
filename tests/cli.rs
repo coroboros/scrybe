@@ -7,9 +7,11 @@
 //! terminal to assert the positive direction.
 #![allow(clippy::unwrap_used, clippy::expect_used)] // tests may unwrap; the binary may not
 
-use assert_cmd::Command;
 use predicates::prelude::*;
 use scrybe::cli::Model;
+
+mod common;
+use common::scrybe;
 
 /// ANSI escape introducer — its presence means color was emitted.
 const ESC: &str = "\u{1b}";
@@ -18,16 +20,6 @@ const ESC: &str = "\u{1b}";
 /// (CI fetches it once), mirroring the golden test.
 fn tiny_cached() -> bool {
     scrybe::model::cached_path(Model::Tiny).is_some()
-}
-
-/// A binary invocation with ambient color env neutralized, so a test only sees
-/// the color signal it sets itself.
-fn scrybe() -> Command {
-    let mut cmd = Command::cargo_bin("scrybe").unwrap();
-    cmd.env_remove("NO_COLOR")
-        .env_remove("CLICOLOR")
-        .env_remove("CLICOLOR_FORCE");
-    cmd
 }
 
 #[test]
@@ -247,10 +239,104 @@ fn silence_produces_no_transcript() {
         .arg("tests/fixtures/speech/silence.wav")
         .assert()
         .success();
-    let text = std::fs::read_to_string(out.path().join("silence.txt")).unwrap_or_default();
+    let text = std::fs::read_to_string(out.path().join("silence.txt"))
+        .expect("silence.txt must be written");
     assert!(
         text.trim().is_empty(),
         "silence must not hallucinate, got: {text:?}"
+    );
+}
+
+#[test]
+fn json_multi_file_writes_sidecars_into_created_out_dir() {
+    if !tiny_cached() {
+        eprintln!("skipping: tiny model not cached");
+        return;
+    }
+    let parent = tempfile::tempdir().unwrap();
+    let out = parent.path().join("fresh"); // does not exist yet → exercises create_dir_all
+    scrybe()
+        .args(["--model", "tiny", "--json", "--out-dir"])
+        .arg(&out)
+        .args([
+            "tests/fixtures/speech/en.wav",
+            "tests/fixtures/speech/silence.wav",
+        ])
+        .assert()
+        .success()
+        // Multiple inputs → .json sidecars (not stdout streaming).
+        .stdout(predicate::str::contains("schema_version").not())
+        .stderr(predicate::str::contains("writing .json sidecars"));
+    assert!(
+        out.join("en.json").exists(),
+        "en.json sidecar in the created dir"
+    );
+    assert!(
+        out.join("silence.json").exists(),
+        "silence.json sidecar in the created dir"
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn ctrl_c_stops_gracefully_with_partial_exit() {
+    if !tiny_cached() {
+        eprintln!("skipping: tiny model not cached");
+        return;
+    }
+    use std::process::{Command as Proc, Stdio};
+    use std::time::{Duration, Instant};
+
+    let work = tempfile::tempdir().unwrap();
+    let inputs = work.path().join("in");
+    let out = work.path().join("out");
+    std::fs::create_dir_all(&inputs).unwrap();
+    let total = 16;
+    for i in 0..total {
+        std::fs::copy(
+            "tests/fixtures/speech/en.wav",
+            inputs.join(format!("clip{i:02}.wav")),
+        )
+        .unwrap();
+    }
+
+    let mut child = Proc::new(env!("CARGO_BIN_EXE_scrybe"))
+        .args(["--model", "tiny", "--format", "txt", "--out-dir"])
+        .arg(&out)
+        .arg(&inputs)
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .expect("spawn scrybe");
+
+    let txt_count = || {
+        std::fs::read_dir(&out)
+            .map(|d| {
+                d.flatten()
+                    .filter(|e| e.path().extension().is_some_and(|x| x == "txt"))
+                    .count()
+            })
+            .unwrap_or(0)
+    };
+
+    // Once the run has produced its first output, interrupt mid-batch.
+    let start = Instant::now();
+    while txt_count() == 0 && start.elapsed() < Duration::from_secs(60) {
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    // ctrlc catches SIGINT and requests a graceful stop (no kill -9).
+    Proc::new("kill")
+        .arg("-INT")
+        .arg(child.id().to_string())
+        .status()
+        .expect("send SIGINT");
+
+    let status = child.wait().expect("wait for scrybe");
+    assert_eq!(status.code(), Some(20), "interrupted run must exit 20");
+    let produced = txt_count();
+    assert!(
+        (1..total).contains(&produced),
+        "partial completion expected, got {produced}/{total}"
     );
 }
 

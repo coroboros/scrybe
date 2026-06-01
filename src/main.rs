@@ -142,6 +142,15 @@ fn transcribe(cli: &Cli) -> Result<i32, ScrybeError> {
     } else {
         cli.format.clone()
     };
+
+    // Fail loud rather than silently overwrite when two inputs map to one output.
+    if let Some(collision) = output::first_collision(&files, &formats, cli.out_dir.as_deref()) {
+        eprint_error(&format!(
+            "output collision — {collision}. Use distinct names or an `--out-dir` per source."
+        ));
+        return Ok(USAGE_ERROR);
+    }
+
     let config = batch::Config {
         decoder: cli.decoder,
         options,
