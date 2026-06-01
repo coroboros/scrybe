@@ -21,22 +21,24 @@ pub fn to_16k_mono(mono: Vec<f32>, src_rate: u32) -> Result<Vec<f32>, String> {
         format!("resample {src_rate} Hz → {TARGET_SAMPLE_RATE} Hz failed: {detail}")
     };
 
-    let chunk = 1024;
-    let sub_chunks = 2;
-    let channels = 1;
+    // rubato FFT block-size tuning: 1024-frame blocks split into 2 sub-chunks trade
+    // latency for throughput sensibly for whole-file offline resampling. Mono input.
+    const FFT_CHUNK: usize = 1024;
+    const FFT_SUB_CHUNKS: usize = 2;
+    const CHANNELS: usize = 1;
     let mut resampler = Fft::<f32>::new(
         src_rate as usize,
         TARGET_SAMPLE_RATE as usize,
-        chunk,
-        sub_chunks,
-        channels,
+        FFT_CHUNK,
+        FFT_SUB_CHUNKS,
+        CHANNELS,
         FixedSync::Both,
     )
     .map_err(|e| fail(e.to_string()))?;
 
     let in_frames = mono.len();
     let input =
-        InterleavedSlice::new(&mono, channels, in_frames).map_err(|e| fail(e.to_string()))?;
+        InterleavedSlice::new(&mono, CHANNELS, in_frames).map_err(|e| fail(e.to_string()))?;
 
     let out_capacity = resampler.process_all_needed_output_len(in_frames);
     // A low source rate upsamples a modest raw buffer into a much larger output;
@@ -49,7 +51,7 @@ pub fn to_16k_mono(mono: Vec<f32>, src_rate: u32) -> Result<Vec<f32>, String> {
         ));
     }
     let mut out = vec![0.0f32; out_capacity];
-    let mut output = InterleavedSlice::new_mut(&mut out, channels, out_capacity)
+    let mut output = InterleavedSlice::new_mut(&mut out, CHANNELS, out_capacity)
         .map_err(|e| fail(e.to_string()))?;
 
     let (_in_done, out_done) = resampler

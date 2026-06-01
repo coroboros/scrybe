@@ -322,7 +322,14 @@ mod tests {
         assert_eq!(value["schema_version"], 1);
         assert_eq!(value["language"], "en");
         assert_eq!(value["model"], "tiny");
+        assert_eq!(value["duration"], 3.0);
         assert_eq!(value["segments"].as_array().unwrap().len(), 2);
+        // Pin the per-segment keys too: a rename or dropped field is an incompatible
+        // schema change and must force a JSON_SCHEMA_VERSION bump, not pass silently.
+        let seg = &value["segments"][0];
+        assert_eq!(seg["start"], 0.0);
+        assert_eq!(seg["end"], 1.5);
+        assert_eq!(seg["text"], "Hello world");
     }
 
     #[test]

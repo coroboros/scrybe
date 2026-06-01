@@ -234,9 +234,9 @@ fn append_f32(decoded: &GenericAudioBufferRef<'_>, chunk: &mut Vec<f32>, out: &m
 pub fn decode_via_ffmpeg(path: &Path) -> Result<Decoded, ScrybeError> {
     let unsupported = |detail: String| ScrybeError::unsupported_codec(path, detail);
 
-    // Canonicalize to an absolute path so a leading-dash name can't be parsed by
-    // ffmpeg as an option (ffmpeg has no `--` end-of-options marker; `-i` consumes
-    // the next argument literally, so an absolute path is the safe form).
+    // `-i` consumes its next argument literally (ffmpeg has no `--` end-of-options
+    // marker), so a leading-dash name is already safe; canonicalizing to an absolute
+    // path is defense-in-depth, and falls back to the raw path if it fails.
     let input = std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
     let mut child = Command::new("ffmpeg")
         .args(["-v", "error", "-i"])

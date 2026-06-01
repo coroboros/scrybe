@@ -11,6 +11,9 @@ use scrybe::audio::{self, AudioPcm};
 use scrybe::cli::Decoder;
 use scrybe::error::ScrybeError;
 
+mod common;
+use common::ffmpeg_available;
+
 fn decode(path: &str, decoder: Decoder) -> Result<AudioPcm, ScrybeError> {
     audio::load_audio(Path::new(path), decoder)
 }
@@ -62,7 +65,7 @@ fn aac_lc_decodes_without_false_positive() {
 
 #[test]
 fn ffmpeg_fallback_decodes_he_aac() {
-    if which_ffmpeg().is_none() {
+    if !ffmpeg_available() {
         eprintln!("skipping: ffmpeg not on PATH");
         return;
     }
@@ -72,7 +75,7 @@ fn ffmpeg_fallback_decodes_he_aac() {
 
 #[test]
 fn ffmpeg_rejects_non_audio_with_exit_10() {
-    if which_ffmpeg().is_none() {
+    if !ffmpeg_available() {
         eprintln!("skipping: ffmpeg not on PATH");
         return;
     }
@@ -84,7 +87,7 @@ fn ffmpeg_rejects_non_audio_with_exit_10() {
 
 #[test]
 fn ffmpeg_decodes_leading_dash_filename() {
-    if which_ffmpeg().is_none() {
+    if !ffmpeg_available() {
         eprintln!("skipping: ffmpeg not on PATH");
         return;
     }
@@ -95,13 +98,4 @@ fn ffmpeg_decodes_leading_dash_filename() {
     std::fs::copy("tests/fixtures/audio/tone.wav", &dash).unwrap();
     let pcm = decode(dash.to_str().unwrap(), Decoder::Ffmpeg).expect("decode -dash.wav");
     assert!(!pcm.samples.is_empty());
-}
-
-fn which_ffmpeg() -> Option<()> {
-    std::process::Command::new("ffmpeg")
-        .arg("-version")
-        .output()
-        .ok()
-        .filter(|o| o.status.success())
-        .map(|_| ())
 }
