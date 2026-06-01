@@ -104,10 +104,15 @@ fn estimated_memory(model: Model, jobs: usize) -> u64 {
     weights + working_set + DECODE_BUFFER.saturating_mul(jobs.max(1) as u64)
 }
 
-/// Whether transcribing `model` at `jobs` would exceed safe memory, leaving 15%
-/// headroom on the detected total.
+/// Fraction of detected RAM a run may use, leaving headroom for the OS and other
+/// processes.
+const MEMORY_BUDGET_PERCENT: u64 = 85;
+
+/// Whether transcribing `model` at `jobs` would exceed the memory budget. Multiply
+/// before dividing so the percentage doesn't truncate the byte total (no overflow
+/// risk: any real RAM total times 85 stays well within `u64`).
 pub fn would_exceed_memory(total_ram: u64, model: Model, jobs: usize) -> bool {
-    estimated_memory(model, jobs) > total_ram / 100 * 85
+    estimated_memory(model, jobs) > total_ram * MEMORY_BUDGET_PERCENT / 100
 }
 
 /// The largest model that fits at one job, for the smart default and guard hints.
@@ -203,6 +208,9 @@ const SILERO_VAD_BYTES: &[u8] = include_bytes!(concat!(
 /// copy (HF cache, or a prior materialization); otherwise writes the bundled,
 /// SHA-pinned model so VAD never depends on the network.
 pub fn ensure_vad() -> Result<PathBuf, ScrybeError> {
+    // A read error or checksum mismatch on a cached copy falls through to writing
+    // the bundled, SHA-pinned model — the always-available floor — rather than
+    // failing the run.
     if let Some(path) = cached(VAD_REPO, VAD_FILE)
         && sha256_matches(&path, VAD_SHA256, "silero-vad").unwrap_or(false)
     {

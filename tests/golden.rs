@@ -58,6 +58,43 @@ fn english_clip_within_wer_tolerance() {
     );
 }
 
+#[test]
+fn vad_floor_transcribes_through_the_engine() {
+    // The mandated VAD floor is always on in production (main wires
+    // `ensure_vad()` into `Engine::load`). The WER test above loads with VAD off,
+    // so this is the only coverage of the engine's VAD arm end-to-end.
+    let Some(model_path) = scrybe::model::cached_path(Model::Tiny) else {
+        eprintln!("skipping: tiny model not cached — run `scrybe models pull tiny`");
+        return;
+    };
+
+    let vad_path = scrybe::model::ensure_vad().expect("bundled VAD materializes");
+    let engine = Engine::load(&model_path, Some(&vad_path)).expect("load tiny model with VAD");
+    let pcm = audio::load_audio(
+        Path::new("tests/fixtures/speech/en.wav"),
+        Decoder::Symphonia,
+    )
+    .expect("decode en.wav");
+    let options = TranscribeOptions {
+        language: Some("en".to_owned()),
+        translate: false,
+        threads: 4,
+    };
+    let transcript = engine
+        .transcribe(&pcm.samples, &options, |_| {})
+        .expect("transcribe with VAD enabled");
+    let hypothesis = transcript
+        .segments
+        .iter()
+        .map(|s| s.text.to_lowercase())
+        .collect::<Vec<_>>()
+        .join(" ");
+    assert!(
+        hypothesis.contains("fox") || hypothesis.contains("dog"),
+        "VAD-enabled transcript lost its anchor words; got: {hypothesis:?}"
+    );
+}
+
 /// Word error rate: word-level edit distance over reference length, after
 /// lowercasing and stripping punctuation.
 fn word_error_rate(reference: &str, hypothesis: &str) -> f64 {

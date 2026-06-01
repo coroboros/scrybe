@@ -90,6 +90,7 @@ to decode through a system `ffmpeg` when one is on `PATH`.
 | `13` | GPU init failed |
 | `14` | file not found |
 | `15` | model load failed (corrupt or incompatible ggml) |
+| `16` | transcription failed (compute or decode failure) |
 | `20` | partial batch failure, or interrupted before completion |
 
 ## License

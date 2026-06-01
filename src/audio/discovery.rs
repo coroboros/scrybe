@@ -55,8 +55,18 @@ mod tests {
 
     #[test]
     fn filters_non_audio_by_extension() {
-        assert!(is_audio(Path::new("a/b.MP3")));
-        assert!(is_audio(Path::new("clip.flac")));
+        // Track the constant so a dropped extension (e.g. the m4b/mp4/oga aliases)
+        // fails here instead of silently shrinking what reaches the decoder.
+        for ext in AUDIO_EXTENSIONS {
+            assert!(
+                is_audio(Path::new(&format!("clip.{ext}"))),
+                "{ext} must be audio"
+            );
+        }
+        assert!(
+            is_audio(Path::new("a/b.MP3")),
+            "extension match is case-insensitive"
+        );
         assert!(!is_audio(Path::new("notes.txt")));
         assert!(!is_audio(Path::new("no_extension")));
     }

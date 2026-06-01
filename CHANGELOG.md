@@ -10,7 +10,7 @@
 - Parallel batch — bounded-pipeline decode feeding serial inference, live progress, colored run summary (×RT, language, outputs), skip up-to-date outputs unless `--force`, graceful Ctrl-C, partial-batch resilience (exit `20`)
 - Output writers — `txt`/`srt`/`vtt`/`json`/`tsv`, sidecar or `--out-dir`, a stable versioned JSON schema, and single-file `--json` to stdout
 - Void-tinted color layer — honors `NO_COLOR`, `CLICOLOR_FORCE`, `--no-color`, and non-TTY auto-strip
-- Structured error taxonomy — one actionable line per failure with stable exit codes (`1`, `10`–`14`, `20`)
+- Structured error taxonomy — one actionable line per failure with stable exit codes (`1`, `10`–`16`, `20`)
 
 ### Configuration
 - Rust crate (lib + bin), `rust-toolchain.toml` pinned to `1.96`, `rustfmt.toml`, clippy lints denying `unwrap`/`expect`/`panic`, MIT `LICENSE.md`

@@ -297,8 +297,9 @@ fn ctrl_c_stops_gracefully_with_partial_exit() {
         .unwrap();
     }
 
+    // Two formats so we can assert the per-file output set is never half-written.
     let mut child = Proc::new(env!("CARGO_BIN_EXE_scrybe"))
-        .args(["--model", "tiny", "--format", "txt", "--out-dir"])
+        .args(["--model", "tiny", "--format", "txt,srt", "--out-dir"])
         .arg(&out)
         .arg(&inputs)
         .stdout(Stdio::null())
@@ -306,11 +307,11 @@ fn ctrl_c_stops_gracefully_with_partial_exit() {
         .spawn()
         .expect("spawn scrybe");
 
-    let txt_count = || {
+    let count_ext = |ext: &'static str| {
         std::fs::read_dir(&out)
             .map(|d| {
                 d.flatten()
-                    .filter(|e| e.path().extension().is_some_and(|x| x == "txt"))
+                    .filter(|e| e.path().extension().is_some_and(|x| x == ext))
                     .count()
             })
             .unwrap_or(0)
@@ -318,7 +319,7 @@ fn ctrl_c_stops_gracefully_with_partial_exit() {
 
     // Once the run has produced its first output, interrupt mid-batch.
     let start = Instant::now();
-    while txt_count() == 0 && start.elapsed() < Duration::from_secs(60) {
+    while count_ext("txt") == 0 && start.elapsed() < Duration::from_secs(60) {
         std::thread::sleep(Duration::from_millis(50));
     }
     // ctrlc catches SIGINT and requests a graceful stop (no kill -9).
@@ -330,10 +331,17 @@ fn ctrl_c_stops_gracefully_with_partial_exit() {
 
     let status = child.wait().expect("wait for scrybe");
     assert_eq!(status.code(), Some(20), "interrupted run must exit 20");
-    let produced = txt_count();
+    let produced = count_ext("txt");
     assert!(
         (1..total).contains(&produced),
         "partial completion expected, got {produced}/{total}"
+    );
+    // Graceful stop finishes the in-flight file's whole output set, so every
+    // completed stem has both sidecars — never a half-written set.
+    assert_eq!(
+        produced,
+        count_ext("srt"),
+        "each completed file must write both txt and srt, or neither"
     );
 }
 
@@ -406,6 +414,23 @@ fn default_writes_sidecar_next_to_input() {
         dir.path().join("en.txt").exists(),
         "default writes the sidecar next to the input"
     );
+}
+
+#[test]
+fn uncreatable_out_dir_exits_io_error() {
+    // Parent of --out-dir is a regular file, so create_dir_all fails before any
+    // model load — the only path that surfaces exit 1 (Io) through the binary.
+    let dir = tempfile::tempdir().unwrap();
+    let blocker = dir.path().join("blocker");
+    std::fs::write(&blocker, b"x").unwrap();
+    scrybe()
+        .args(["--format", "txt", "--out-dir"])
+        .arg(blocker.join("sub")) // a directory under a regular file
+        .arg("tests/fixtures/speech/en.wav")
+        .assert()
+        .failure()
+        .code(1)
+        .stderr(predicate::str::contains("could not create out-dir"));
 }
 
 #[test]

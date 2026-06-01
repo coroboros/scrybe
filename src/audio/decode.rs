@@ -159,6 +159,9 @@ fn presize_capacity(source_frames: Option<u64>, channels: u16) -> usize {
     }
 }
 
+/// Append one decoded packet's interleaved samples to `out`. `chunk` is reused
+/// scratch — `copy_to_vec_interleaved` overwrites it in full each call — so the
+/// per-packet allocation is amortized across the file.
 fn append_f32(decoded: &GenericAudioBufferRef<'_>, chunk: &mut Vec<f32>, out: &mut Vec<f32>) {
     decoded.copy_to_vec_interleaved(chunk);
     out.extend_from_slice(chunk);
@@ -169,7 +172,9 @@ fn append_f32(decoded: &GenericAudioBufferRef<'_>, chunk: &mut Vec<f32>, out: &m
 pub fn decode_via_ffmpeg(path: &Path) -> Result<Decoded, ScrybeError> {
     let unsupported = |detail: String| ScrybeError::unsupported_codec(path, detail);
 
-    // Canonicalize so a leading-dash path can't be parsed by ffmpeg as an option.
+    // Canonicalize to an absolute path so a leading-dash name can't be parsed by
+    // ffmpeg as an option (ffmpeg has no `--` end-of-options marker; `-i` consumes
+    // the next argument literally, so an absolute path is the safe form).
     let input = std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
     let output = Command::new("ffmpeg")
         .args(["-v", "error", "-i"])
@@ -257,25 +262,49 @@ const SBR_SYNC_EXTENSION: u32 = 0x2B7;
 /// explicit hierarchical (base object type 5 = SBR, 29 = PS) and backward-
 /// compatible (base type 2 + the `0x2B7` sync extension declaring SBR/PS), which
 /// is what Apple's encoder emits and what symphonia silently mis-decodes.
+///
+/// The backward-compatible extension sits at a determinate bit offset, right after
+/// the GASpecificConfig — so the config is parsed structurally to reach it rather
+/// than scanning the whole payload, which could match `0x2B7` coincidentally
+/// inside a valid AAC-LC config and false-reject it.
 fn is_he_aac_asc(asc: &[u8]) -> bool {
-    let mut reader = BitReader::at(asc, 0);
-    match read_object_type(&mut reader) {
-        Some(5 | 29) => return true,
-        Some(_) => {}
-        None => return false,
+    let mut r = BitReader::at(asc, 0);
+    let Some(aot) = read_object_type(&mut r) else {
+        return false;
+    };
+    if aot == 5 || aot == 29 {
+        return true;
     }
-    // The SBR sync extension + extension object type span 16 bits, so the last
-    // valid start is `bits - 16` (inclusive). Reads past the end return None.
-    let bits = asc.len() * 8;
-    for start in 0..=bits.saturating_sub(16) {
-        let mut reader = BitReader::at(asc, start);
-        if reader.read(11) == Some(SBR_SYNC_EXTENSION)
-            && matches!(read_object_type(&mut reader), Some(5 | 29))
-        {
-            return true;
-        }
+    // samplingFrequencyIndex (15 escapes to an explicit 24-bit rate).
+    let Some(sfi) = r.read(4) else { return false };
+    if sfi == 0x0f && r.read(24).is_none() {
+        return false;
     }
-    false
+    // GASpecificConfig has a determinate length only with an explicit channel
+    // configuration (1..=7). Config 0 carries a variable program_config_element;
+    // a backward-compatible SBR extension does not occur there in practice, so it
+    // is treated as plain AAC-LC (recoverable via `--decoder ffmpeg` if ever wrong).
+    let Some(channels) = r.read(4) else {
+        return false;
+    };
+    if !(1..=7).contains(&channels) {
+        return false;
+    }
+    // Minimal GASpecificConfig for standalone AAC: frameLengthFlag,
+    // dependsOnCoreCoder (+14-bit coreCoderDelay when set), extensionFlag.
+    if r.read(1).is_none() {
+        return false;
+    }
+    match r.read(1) {
+        Some(0) => {}
+        Some(_) if r.read(14).is_some() => {}
+        _ => return false,
+    }
+    if r.read(1).is_none() {
+        return false;
+    }
+    // syncExtensionType at its determinate position, then the extension AOT.
+    r.read(11) == Some(SBR_SYNC_EXTENSION) && matches!(read_object_type(&mut r), Some(5 | 29))
 }
 
 #[cfg(test)]
@@ -298,10 +327,19 @@ mod tests {
     }
 
     #[test]
-    fn detects_sbr_in_the_final_16_bits() {
-        // 0x2B7 sync + ext object type 5 occupying exactly the last 16 bits —
-        // regression for the scan's upper bound (previously exclusive, so missed).
+    fn detects_sbr_with_no_trailing_bytes() {
+        // Backward-compatible SBR (0x2B7 + ext AOT 5) ending exactly at the ASC
+        // boundary, no padding after the extension.
         assert!(is_he_aac_asc(&[0x12, 0x10, 0x56, 0xe5]));
+    }
+
+    #[test]
+    fn channel_config_zero_is_not_false_rejected() {
+        // AAC-LC with channelConfiguration 0 (program config element). The tail
+        // bytes embed 0x2B7 + AOT 5, so the old whole-buffer scan false-rejected
+        // it as HE-AAC; structural parsing stops at the channel config and treats
+        // it as plain AAC-LC. (Same bytes as the positive fixture, channels → 0.)
+        assert!(!is_he_aac_asc(&[0x14, 0x00, 0x56, 0xe5, 0xa8]));
     }
 
     #[test]

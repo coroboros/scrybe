@@ -91,10 +91,9 @@ fn transcribe(cli: &Cli) -> Result<i32, ScrybeError> {
     // Checked before the dry-run gate and model load, so a doomed run fails fast
     // and the guard is reachable without a model on disk.
     if let Some(collision) = output::first_collision(&files, &formats, cli.out_dir.as_deref()) {
-        eprint_error(&format!(
+        return Ok(usage_error(&format!(
             "output collision — {collision}. Use distinct names or an `--out-dir` per source."
-        ));
-        return Ok(USAGE_ERROR);
+        )));
     }
 
     if cli.dry_run {
@@ -174,19 +173,17 @@ fn transcribe(cli: &Cli) -> Result<i32, ScrybeError> {
 fn validate_model_capabilities(model: Model, cli: &Cli) -> Option<i32> {
     let info = model::info(model);
     if cli.task == Task::Translate && !info.can_translate {
-        eprint_error(&format!(
+        return Some(usage_error(&format!(
             "model `{model}` cannot translate; use a translation-capable model such as `large-v3`",
-        ));
-        return Some(USAGE_ERROR);
+        )));
     }
     if let Some(lang) = cli.lang.as_deref()
         && !lang.eq_ignore_ascii_case("en")
         && !info.multilingual
     {
-        eprint_error(&format!(
+        return Some(usage_error(&format!(
             "model `{model}` is English-only; it cannot transcribe `--lang {lang}`",
-        ));
-        return Some(USAGE_ERROR);
+        )));
     }
     None
 }
@@ -298,6 +295,14 @@ fn print_error(err: &ScrybeError) {
 
 fn eprint_error(message: &str) {
     anstream::eprintln!("{} {message}", color::paint(color::ERROR, "error:"));
+}
+
+/// Print a configuration/usage error and return the clap-aligned exit code. These
+/// failures live outside `ScrybeError` by design (see `error.rs`); this keeps the
+/// print-then-exit-2 contract in one place.
+fn usage_error(message: &str) -> i32 {
+    eprint_error(message);
+    USAGE_ERROR
 }
 
 fn print_usage_hint() {

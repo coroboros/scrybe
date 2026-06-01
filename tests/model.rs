@@ -67,6 +67,23 @@ fn english_only_model_rejects_foreign_lang() {
 }
 
 #[test]
+fn english_only_model_accepts_en_case_insensitively() {
+    // The `en` exception is case-insensitive; --dry-run stops before any download.
+    scrybe()
+        .args([
+            "--model",
+            "distil-large-v3.5",
+            "--lang",
+            "EN",
+            "--dry-run",
+            WAV,
+        ])
+        .assert()
+        .success()
+        .stderr(predicate::str::contains("English-only").not());
+}
+
+#[test]
 fn offline_without_cache_exits_11() {
     // An empty HF_HOME forces a cache miss; --offline must error with exit 11 and
     // make no network call (the offline branch never touches the API).
