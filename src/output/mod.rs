@@ -186,6 +186,7 @@ fn render_json(transcript: &Transcript, meta: &Meta<'_>) -> String {
             })
             .collect(),
     };
+    // Serializing these owned plain types is infallible; the arm is unreachable.
     serde_json::to_string_pretty(&doc).unwrap_or_else(|_| "{}".to_owned())
 }
 

@@ -84,8 +84,8 @@ pub fn decode_file(path: &Path) -> Result<Decoded, ScrybeError> {
             .saturating_mul(SAMPLE_BYTES);
         if bytes > MAX_SOURCE_PCM_BYTES {
             return Err(unsupported(format!(
-                "audio is too large to decode in memory (~{:.1} GB raw); use `--jobs 1`, a shorter clip, or `--decoder ffmpeg`",
-                bytes as f64 / 1024.0 / 1024.0 / 1024.0,
+                "audio is too large to decode in memory (~{} raw); use `--jobs 1`, a shorter clip, or `--decoder ffmpeg`",
+                crate::model::human_size(bytes),
             )));
         }
     }
@@ -104,10 +104,7 @@ pub fn decode_file(path: &Path) -> Result<Decoded, ScrybeError> {
 
     // Pre-size from the (guard-bounded) frame count to avoid ~log2(N) reallocs on
     // long files; the loop also caps growth for sources that don't declare length.
-    let mut samples = match source_frames {
-        Some(frames) => Vec::with_capacity((frames as usize).saturating_mul(channels as usize)),
-        None => Vec::new(),
-    };
+    let mut samples = Vec::with_capacity(presize_capacity(source_frames, channels));
     let max_samples = (MAX_SOURCE_PCM_BYTES / SAMPLE_BYTES) as usize;
     let mut chunk: Vec<f32> = Vec::new();
     loop {
@@ -144,6 +141,22 @@ pub fn decode_file(path: &Path) -> Result<Decoded, ScrybeError> {
         sample_rate,
         channels,
     })
+}
+
+/// Initial capacity for the decode buffer. Pre-sizes to the declared frame count
+/// to avoid realloc storms on long files, but caps the speculative allocation so
+/// a crafted container header (huge declared length from a tiny file) can't force
+/// a multi-GB up-front alloc — the in-loop ceiling still bounds growth from the
+/// bytes actually decoded.
+fn presize_capacity(source_frames: Option<u64>, channels: u16) -> usize {
+    /// ~64 MB of f32 — enough to pre-size ~17 min of 16 kHz mono before growth.
+    const PRESIZE_CAP_SAMPLES: usize = 16 * 1024 * 1024;
+    match source_frames {
+        Some(frames) => (frames as usize)
+            .saturating_mul(channels as usize)
+            .min(PRESIZE_CAP_SAMPLES),
+        None => 0,
+    }
 }
 
 fn append_f32(decoded: &GenericAudioBufferRef<'_>, chunk: &mut Vec<f32>, out: &mut Vec<f32>) {
@@ -289,6 +302,16 @@ mod tests {
         // 0x2B7 sync + ext object type 5 occupying exactly the last 16 bits —
         // regression for the scan's upper bound (previously exclusive, so missed).
         assert!(is_he_aac_asc(&[0x12, 0x10, 0x56, 0xe5]));
+    }
+
+    #[test]
+    fn presize_capacity_caps_crafted_headers() {
+        // A small declared length pre-sizes exactly (2 ch interleaved).
+        assert_eq!(presize_capacity(Some(1000), 2), 2000);
+        // A crafted huge declared length is capped, not trusted up front.
+        assert_eq!(presize_capacity(Some(u64::MAX), 2), 16 * 1024 * 1024);
+        // No declared length → no speculative allocation.
+        assert_eq!(presize_capacity(None, 1), 0);
     }
 
     #[test]

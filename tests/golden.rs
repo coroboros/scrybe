@@ -49,6 +49,13 @@ fn english_clip_within_wer_tolerance() {
         wer <= WER_TOLERANCE,
         "WER {wer:.2} too high; got: {hypothesis:?}"
     );
+    // A loose WER bar can pass on near-empty output; anchor on a high-signal word
+    // so a catastrophic quality regression still fails.
+    let normalized = hypothesis.to_lowercase();
+    assert!(
+        normalized.contains("fox") || normalized.contains("dog"),
+        "transcript lost its anchor words; got: {hypothesis:?}"
+    );
 }
 
 /// Word error rate: word-level edit distance over reference length, after

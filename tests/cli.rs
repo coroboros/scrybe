@@ -8,19 +8,12 @@
 #![allow(clippy::unwrap_used, clippy::expect_used)] // tests may unwrap; the binary may not
 
 use predicates::prelude::*;
-use scrybe::cli::Model;
 
 mod common;
-use common::scrybe;
+use common::{scrybe, tiny_cached};
 
 /// ANSI escape introducer — its presence means color was emitted.
 const ESC: &str = "\u{1b}";
-
-/// The transcription tests need the tiny model; skip cleanly when it is absent
-/// (CI fetches it once), mirroring the golden test.
-fn tiny_cached() -> bool {
-    scrybe::model::cached_path(Model::Tiny).is_some()
-}
 
 #[test]
 fn help_lists_every_flag_and_subcommand_and_exits_zero() {
@@ -40,6 +33,8 @@ fn help_lists_every_flag_and_subcommand_and_exits_zero() {
         .stdout(predicate::str::contains("--decoder"))
         .stdout(predicate::str::contains("--no-color"))
         .stdout(predicate::str::contains("--json"))
+        .stdout(predicate::str::contains("--offline"))
+        .stdout(predicate::str::contains("--recursive"))
         .stdout(predicate::str::contains("models"));
 }
 
@@ -119,11 +114,13 @@ fn json_single_file_streams_clean_stdout() {
         return;
     }
     // stdout must be only the JSON document — the status banner goes to stderr.
+    // No --lang, so "en" here also exercises the auto-detect language arm.
     scrybe()
         .args(["--model", "tiny", "--json", "tests/fixtures/speech/en.wav"])
         .assert()
         .success()
         .stdout(predicate::str::contains("\"schema_version\": 1"))
+        .stdout(predicate::str::contains("\"language\": \"en\""))
         .stdout(predicate::str::contains("model=").not());
 }
 
@@ -338,6 +335,110 @@ fn ctrl_c_stops_gracefully_with_partial_exit() {
         (1..total).contains(&produced),
         "partial completion expected, got {produced}/{total}"
     );
+}
+
+#[test]
+fn recursive_flag_controls_directory_descent() {
+    // Model-free: --dry-run exercises the clap→discover seam without inference.
+    let root = tempfile::tempdir().unwrap();
+    std::fs::copy("tests/fixtures/speech/en.wav", root.path().join("top.wav")).unwrap();
+    let sub = root.path().join("sub");
+    std::fs::create_dir(&sub).unwrap();
+    std::fs::copy("tests/fixtures/speech/en.wav", sub.join("nested.wav")).unwrap();
+
+    // Without --recursive: top-level file listed, nested file absent.
+    scrybe()
+        .arg("--dry-run")
+        .arg(root.path())
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("top.wav"))
+        .stdout(predicate::str::contains("nested.wav").not());
+
+    // With --recursive: the nested file appears too.
+    scrybe()
+        .args(["--dry-run", "--recursive"])
+        .arg(root.path())
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("top.wav"))
+        .stdout(predicate::str::contains("nested.wav"));
+}
+
+#[test]
+fn colliding_outputs_fail_fast_with_usage_error() {
+    // Same stem, different containers → both map to tone.txt. Caught before model
+    // load, so this needs no cached model and writes nothing.
+    scrybe()
+        .args([
+            "--format",
+            "txt",
+            "tests/fixtures/audio/tone.wav",
+            "tests/fixtures/audio/tone.mp3",
+        ])
+        .assert()
+        .failure()
+        .code(2)
+        .stderr(predicate::str::contains("output collision"));
+    assert!(
+        !std::path::Path::new("tests/fixtures/audio/tone.txt").exists(),
+        "a doomed run must not write any output"
+    );
+}
+
+#[test]
+fn default_writes_sidecar_next_to_input() {
+    if !tiny_cached() {
+        eprintln!("skipping: tiny model not cached");
+        return;
+    }
+    // No --out-dir: the sidecar lands next to the input. Copy into a tempdir so
+    // the real fixtures dir stays clean.
+    let dir = tempfile::tempdir().unwrap();
+    let input = dir.path().join("en.wav");
+    std::fs::copy("tests/fixtures/speech/en.wav", &input).unwrap();
+    scrybe()
+        .args(["--model", "tiny", "--format", "txt"])
+        .arg(&input)
+        .assert()
+        .success();
+    assert!(
+        dir.path().join("en.txt").exists(),
+        "default writes the sidecar next to the input"
+    );
+}
+
+#[test]
+fn no_input_paths_exits_usage_error() {
+    scrybe()
+        .assert()
+        .failure()
+        .code(2)
+        .stderr(predicate::str::contains("no input paths"));
+}
+
+#[test]
+fn empty_directory_reports_no_audio_found() {
+    let empty = tempfile::tempdir().unwrap();
+    scrybe()
+        .arg("--dry-run")
+        .arg(empty.path())
+        .assert()
+        .success()
+        .stderr(predicate::str::contains("no audio files found"));
+}
+
+#[test]
+fn models_remove_uncached_reports_not_cached() {
+    // Point the cache at an empty dir so the model is guaranteed uncached; no
+    // network, no download.
+    let cache = tempfile::tempdir().unwrap();
+    scrybe()
+        .env("HF_HOME", cache.path())
+        .args(["models", "remove", "tiny"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("is not cached"));
 }
 
 #[test]

@@ -22,9 +22,9 @@ pub struct Cli {
     #[arg(long)]
     pub recursive: bool,
 
-    /// Whisper model to use.
-    #[arg(long, value_enum, default_value_t = DEFAULT_MODEL)]
-    pub model: Model,
+    /// Whisper model to use; defaults to the largest that fits detected RAM.
+    #[arg(long, value_enum)]
+    pub model: Option<Model>,
 
     /// Source language code (e.g. `en`, `fr`); auto-detected when omitted.
     #[arg(long, value_name = "LANG")]
@@ -152,7 +152,9 @@ macro_rules! display_via_value_enum {
             fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
                 match self.to_possible_value() {
                     Some(value) => f.write_str(value.get_name()),
-                    None => Ok(()),
+                    // Unreachable: every derived variant names a value. Render the
+                    // Debug name rather than silently emitting nothing.
+                    None => write!(f, "{self:?}"),
                 }
             }
         }

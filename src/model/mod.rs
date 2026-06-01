@@ -12,7 +12,7 @@ use hf_hub::Cache;
 use hf_hub::api::sync::ApiBuilder;
 use sha2::{Digest, Sha256};
 
-use crate::cli::Model;
+use crate::cli::{DEFAULT_MODEL, Model};
 use crate::error::ScrybeError;
 
 /// The Silero VAD model (whisper.cpp voice-activity segmentation), fetched into
@@ -79,6 +79,9 @@ pub fn info(model: Model) -> ModelInfo {
             file: "ggml-model.bin",
             size: 1_519_521_155,
             sha256: "ec2498919b498c5f6b00041adb45650124b3cd9f26f545fffa8f5d11c28dcf26",
+            // English-leaning per the distil-whisper release; gated English-only
+            // here so `--lang <non-en>` is rejected loud rather than silently
+            // degrading. Not a registry oversight.
             multilingual: false,
             can_translate: false,
         },
@@ -115,6 +118,14 @@ pub fn largest_fitting(total_ram: u64) -> Model {
         }
     }
     Model::Tiny
+}
+
+/// Resolve the model to run: an explicit `--model` is honored as-is (and later
+/// guarded, so an oversized explicit pick still fails loud); when omitted, pick
+/// the largest model that fits detected RAM, falling back to the nominal default
+/// when memory can't be read.
+pub fn resolve_model(explicit: Option<Model>, total_ram: Option<u64>) -> Model {
+    explicit.unwrap_or_else(|| total_ram.map_or(DEFAULT_MODEL, largest_fitting))
 }
 
 /// Total physical memory in bytes, or `None` when it can't be read.
@@ -331,6 +342,21 @@ mod tests {
         assert_eq!(largest_fitting(8 * GB), Model::LargeV3Turbo);
         assert_eq!(largest_fitting(2 * GB), Model::Small);
         assert_eq!(largest_fitting(512 * 1024 * 1024), Model::Tiny);
+    }
+
+    #[test]
+    fn resolve_model_honors_explicit_and_shrinks_default() {
+        // Explicit pick passes through untouched, even when it won't fit (the
+        // memory guard refuses it later — never a silent override).
+        assert_eq!(
+            resolve_model(Some(Model::LargeV3), Some(2 * GB)),
+            Model::LargeV3
+        );
+        // Omitted --model resolves to the largest that fits detected RAM.
+        assert_eq!(resolve_model(None, Some(8 * GB)), Model::LargeV3Turbo);
+        assert_eq!(resolve_model(None, Some(2 * GB)), Model::Small);
+        // Unknown RAM falls back to the nominal default.
+        assert_eq!(resolve_model(None, None), DEFAULT_MODEL);
     }
 
     #[test]

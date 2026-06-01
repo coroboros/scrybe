@@ -14,9 +14,11 @@ const WAV: &str = "tests/fixtures/audio/tone.wav";
 
 #[test]
 fn memory_guard_refuses_oversized_run() {
-    // 64 jobs of large-v3 (~4 GB each) exceeds any realistic machine → exit 12.
+    // The guard scales with per-job decode buffers (~384 MiB each). 1200 jobs is
+    // ~450 GiB of buffers alone — past 85% headroom on any real runner (even a
+    // 512 GiB box), so this drives exit 12 without depending on the host's RAM.
     scrybe()
-        .args(["--model", "large-v3", "--jobs", "64", WAV])
+        .args(["--model", "large-v3", "--jobs", "1200", WAV])
         .assert()
         .failure()
         .code(12)

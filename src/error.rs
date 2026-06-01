@@ -1,9 +1,11 @@
 //! Structured failure taxonomy with stable, documented exit codes.
 //!
-//! Every user-facing failure is one [`ScrybeError`] rendered as a single
-//! actionable line, and each variant maps to a fixed exit code so callers can
-//! branch on `$?`. Argument errors (bad flags, unknown values) are owned by
-//! `clap`, which exits `2`.
+//! Every runtime failure is one [`ScrybeError`] rendered as a single actionable
+//! line, and each variant maps to a fixed exit code so callers can branch on
+//! `$?`. Argument errors (bad flags, unknown values) are owned by `clap`, and
+//! configuration/usage errors (unknown model capability, output collision, no
+//! input paths) are deliberately clap-aligned: they print their own line and
+//! exit `2` outside this enum rather than inventing a code per case.
 
 use std::fmt;
 use std::path::{Path, PathBuf};
@@ -22,6 +24,8 @@ pub enum ScrybeError {
     OutOfMemory { detail: String },
     /// The GPU backend failed to initialize.
     GpuInitFailed { detail: String },
+    /// Inference failed at runtime on the CPU backend (state/decode failure).
+    TranscriptionFailed { detail: String },
     /// An input path does not exist.
     FileNotFound { path: PathBuf },
     /// Some files in a batch failed while others succeeded.
@@ -50,6 +54,7 @@ impl ScrybeError {
             Self::GpuInitFailed { .. } => 13,
             Self::FileNotFound { .. } => 14,
             Self::ModelLoadFailed { .. } => 15,
+            Self::TranscriptionFailed { .. } => 16,
             Self::PartialBatchFailure { .. } | Self::Interrupted { .. } => 20,
             Self::Io { .. } => 1,
         }
@@ -82,6 +87,10 @@ impl fmt::Display for ScrybeError {
                 f,
                 "GPU backend failed to start: {detail}. Re-run with `--jobs 1` or use a CPU build.",
             ),
+            Self::TranscriptionFailed { detail } => write!(
+                f,
+                "transcription failed: {detail}. Try a smaller `--model`, or re-fetch the model with `scrybe models pull`.",
+            ),
             Self::FileNotFound { path } => {
                 write!(f, "no such file or directory: {}", path.display())
             }
@@ -106,7 +115,7 @@ mod tests {
 
     #[test]
     fn exit_codes_match_the_documented_contract() {
-        let cases: [(ScrybeError, i32); 9] = [
+        let cases: [(ScrybeError, i32); 10] = [
             (
                 ScrybeError::Io {
                     detail: String::new(),
@@ -151,6 +160,12 @@ mod tests {
                     detail: String::new(),
                 },
                 15,
+            ),
+            (
+                ScrybeError::TranscriptionFailed {
+                    detail: String::new(),
+                },
+                16,
             ),
             (
                 ScrybeError::PartialBatchFailure {

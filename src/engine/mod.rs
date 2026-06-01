@@ -127,6 +127,8 @@ impl Engine {
         // silent output rather than hallucinate.
         params.set_temperature(0.0);
         params.set_temperature_inc(0.2);
+        // Passed to whisper.cpp too, but `filter_segments` is the authoritative
+        // silence gate regardless of how the engine acts on this threshold.
         params.set_no_speech_thold(NO_SPEECH_DROP);
         params.set_logprob_thold(-1.0);
         params.set_entropy_thold(2.4);
@@ -221,11 +223,13 @@ fn load_error(path: &Path, detail: String) -> ScrybeError {
 }
 
 fn run_error(detail: String) -> ScrybeError {
-    let detail = format!("transcription failed: {detail}");
     if active_backend() == Backend::Cpu {
-        ScrybeError::Io { detail }
+        // A compute failure, not an I/O fault — give it its own actionable code.
+        ScrybeError::TranscriptionFailed { detail }
     } else {
-        ScrybeError::GpuInitFailed { detail }
+        ScrybeError::GpuInitFailed {
+            detail: format!("transcription failed: {detail}"),
+        }
     }
 }
 
@@ -243,12 +247,12 @@ mod tests {
     #[test]
     fn cpu_engine_errors_are_not_labelled_gpu() {
         // On the default CPU build, load and runtime failures must not surface as
-        // GPU faults (exit 13).
+        // GPU faults (exit 13): a corrupt model is 15, a compute failure is 16.
         assert_eq!(
             load_error(Path::new("/m.bin"), "x".to_owned()).exit_code(),
             15
         );
-        assert_eq!(run_error("x".to_owned()).exit_code(), 1);
+        assert_eq!(run_error("x".to_owned()).exit_code(), 16);
     }
 
     #[test]

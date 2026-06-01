@@ -52,13 +52,15 @@ fn transcribe(cli: &Cli) -> Result<i32, ScrybeError> {
         }
     }
 
-    // Resolve concurrency up front so the memory guard checks the jobs that will
-    // actually run and the CPU thread budget is split across them.
+    // Resolve concurrency and the effective model up front so the memory guard
+    // checks what will actually run. Inference is serial (one shared context), so
+    // `--jobs` widens decode-ahead, not the number of concurrent inferences.
     let backend = engine::active_backend();
     let (jobs, clamp_note) = batch::resolve_jobs(cli.jobs, backend);
-    model::guard_memory(cli.model, jobs)?;
+    let model = model::resolve_model(cli.model, model::total_memory());
+    model::guard_memory(model, jobs)?;
 
-    if let Some(code) = validate_model_capabilities(cli) {
+    if let Some(code) = validate_model_capabilities(model, cli) {
         return Ok(code);
     }
 
@@ -69,7 +71,7 @@ fn transcribe(cli: &Cli) -> Result<i32, ScrybeError> {
     }
 
     let files = audio::discover(&cli.paths, cli.recursive);
-    print_plan(cli);
+    print_plan(cli, model);
 
     if files.is_empty() {
         anstream::eprintln!(
@@ -77,6 +79,22 @@ fn transcribe(cli: &Cli) -> Result<i32, ScrybeError> {
             color::paint(color::WARN, "no audio files found in the given paths.")
         );
         return Ok(0);
+    }
+
+    let formats: Vec<cli::Format> = if cli.json {
+        vec![cli::Format::Json]
+    } else {
+        cli.format.clone()
+    };
+
+    // Fail loud rather than silently overwrite when two inputs map to one output.
+    // Checked before the dry-run gate and model load, so a doomed run fails fast
+    // and the guard is reachable without a model on disk.
+    if let Some(collision) = output::first_collision(&files, &formats, cli.out_dir.as_deref()) {
+        eprint_error(&format!(
+            "output collision — {collision}. Use distinct names or an `--out-dir` per source."
+        ));
+        return Ok(USAGE_ERROR);
     }
 
     if cli.dry_run {
@@ -90,20 +108,22 @@ fn transcribe(cli: &Cli) -> Result<i32, ScrybeError> {
         return Ok(0);
     }
 
-    let model_path = model::ensure_available(cli.model, cli.offline)?;
+    let model_path = model::ensure_available(model, cli.offline)?;
     // VAD is the mandated correctness floor and is bundled, so it is always on.
     let vad_path = model::ensure_vad()?;
     let engine = engine::Engine::load(&model_path, Some(&vad_path))?;
 
+    // Inference runs one file at a time, so the active job gets every core;
+    // `--jobs` only widens the decode-ahead pool, never the inference threads.
     let threads = cli
         .threads
-        .unwrap_or_else(|| (batch::detected_parallelism() / jobs).max(1));
+        .unwrap_or_else(|| batch::detected_parallelism().max(1));
     let options = engine::TranscribeOptions {
         language: cli.lang.clone(),
         translate: cli.task == Task::Translate,
         threads,
     };
-    let model_name = cli.model.to_string();
+    let model_name = model.to_string();
 
     // `--json` on a single file streams to stdout for piping; no batch UI.
     if cli.json && files.len() == 1 {
@@ -130,25 +150,11 @@ fn transcribe(cli: &Cli) -> Result<i32, ScrybeError> {
         "{}",
         color::paint(
             color::DIM,
-            &format!("backend {backend} · model {} · {jobs} job(s)", cli.model),
+            &format!("backend {backend} · model {model} · {jobs} job(s)"),
         )
     );
     if let Some(note) = clamp_note {
         anstream::eprintln!("{}", color::paint(color::WARN, &note));
-    }
-
-    let formats: Vec<cli::Format> = if cli.json {
-        vec![cli::Format::Json]
-    } else {
-        cli.format.clone()
-    };
-
-    // Fail loud rather than silently overwrite when two inputs map to one output.
-    if let Some(collision) = output::first_collision(&files, &formats, cli.out_dir.as_deref()) {
-        eprint_error(&format!(
-            "output collision — {collision}. Use distinct names or an `--out-dir` per source."
-        ));
-        return Ok(USAGE_ERROR);
     }
 
     let config = batch::Config {
@@ -165,12 +171,11 @@ fn transcribe(cli: &Cli) -> Result<i32, ScrybeError> {
 
 /// Reject model + task/language combinations the model cannot serve, before any
 /// work runs. These are configuration errors, so they exit like a usage error.
-fn validate_model_capabilities(cli: &Cli) -> Option<i32> {
-    let info = model::info(cli.model);
+fn validate_model_capabilities(model: Model, cli: &Cli) -> Option<i32> {
+    let info = model::info(model);
     if cli.task == Task::Translate && !info.can_translate {
         eprint_error(&format!(
-            "model `{}` cannot translate; use a translation-capable model such as `large-v3`",
-            cli.model
+            "model `{model}` cannot translate; use a translation-capable model such as `large-v3`",
         ));
         return Some(USAGE_ERROR);
     }
@@ -179,8 +184,7 @@ fn validate_model_capabilities(cli: &Cli) -> Option<i32> {
         && !info.multilingual
     {
         eprint_error(&format!(
-            "model `{}` is English-only; it cannot transcribe `--lang {lang}`",
-            cli.model
+            "model `{model}` is English-only; it cannot transcribe `--lang {lang}`",
         ));
         return Some(USAGE_ERROR);
     }
@@ -249,7 +253,7 @@ fn list_models() {
 
 /// Print the fully-resolved invocation. Reports every flag so the plan is the
 /// single source of truth for what a run would do.
-fn print_plan(cli: &Cli) {
+fn print_plan(cli: &Cli, model: Model) {
     let optional =
         |value: &Option<usize>| value.map_or_else(|| "auto".to_owned(), |n| n.to_string());
     let lang = cli.lang.as_deref().unwrap_or("auto");
@@ -266,7 +270,7 @@ fn print_plan(cli: &Cli) {
 
     let config = format!(
         "model={} task={} lang={} format={} jobs={} threads={} out-dir={} decoder={} recursive={} force={} json={} offline={} dry-run={}",
-        cli.model,
+        model,
         cli.task,
         lang,
         formats,

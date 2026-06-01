@@ -29,6 +29,13 @@ pub fn detected_parallelism() -> usize {
     std::thread::available_parallelism().map_or(DEFAULT_PARALLELISM, |n| n.get())
 }
 
+/// The real-time factor (`audio / wall`) as a display string, or `None` when no
+/// wall time has elapsed. Single source for the `×RT` token shown live and in the
+/// run summary.
+fn realtime_factor(audio_secs: f64, wall_secs: f64) -> Option<String> {
+    (wall_secs > 0.0).then(|| format!("{:.1}×RT", audio_secs / wall_secs))
+}
+
 /// Resolve the concurrent-file count for the active backend. A single GPU
 /// command queue serializes inference, so more than two concurrent jobs only
 /// contend — clamp and say so. On CPU, default to half the cores.
@@ -226,10 +233,9 @@ fn transcribe_one(
     let on_progress = move |percent: i32| {
         let percent = percent.clamp(0, 100);
         progress_bar.set_position(percent as u64);
-        let elapsed = started.elapsed().as_secs_f64();
-        if elapsed > 0.0 {
-            let done = f64::from(percent) / 100.0 * duration;
-            progress_bar.set_message(format!("{:.1}×RT", done / elapsed));
+        let done = f64::from(percent) / 100.0 * duration;
+        if let Some(rt) = realtime_factor(done, started.elapsed().as_secs_f64()) {
+            progress_bar.set_message(rt);
         }
     };
     let transcript = match engine.transcribe(&pcm.samples, &cfg.options, on_progress) {
@@ -265,11 +271,8 @@ fn print_summary(results: &[Option<FileResult>], interrupted: bool) {
                 done += 1;
                 total_audio += result.duration;
                 total_wall += result.wall;
-                let rt = if result.wall > 0.0 {
-                    format!("{:.1}×RT", result.duration / result.wall)
-                } else {
-                    "—".to_owned()
-                };
+                let rt =
+                    realtime_factor(result.duration, result.wall).unwrap_or_else(|| "—".to_owned());
                 (
                     color::paint(color::SUCCESS, "ok"),
                     format!(
@@ -300,11 +303,8 @@ fn print_summary(results: &[Option<FileResult>], interrupted: bool) {
         );
     }
 
-    let speed = if total_wall > 0.0 {
-        format!(" · {:.1}×RT", total_audio / total_wall)
-    } else {
-        String::new()
-    };
+    let speed =
+        realtime_factor(total_audio, total_wall).map_or(String::new(), |rt| format!(" · {rt}"));
     let footer = format!(
         "{done} done · {skipped} skipped · {failed} failed{speed}{}",
         if interrupted { " · interrupted" } else { "" }

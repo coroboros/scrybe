@@ -14,3 +14,9 @@ pub fn scrybe() -> Command {
         .env_remove("CLICOLOR_FORCE");
     cmd
 }
+
+/// Whether the tiny model is cached. Transcription tests skip cleanly when it is
+/// absent (CI fetches it once); shared so every gate uses one convention.
+pub fn tiny_cached() -> bool {
+    scrybe::model::cached_path(scrybe::cli::Model::Tiny).is_some()
+}
