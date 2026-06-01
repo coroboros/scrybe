@@ -29,6 +29,9 @@ const SAMPLE_BYTES: u64 = 4;
 /// loud; very large sources should use `--decoder ffmpeg` (streams to 16 kHz mono).
 const MAX_SOURCE_PCM_BYTES: u64 = crate::model::DECODE_BUFFER;
 
+/// The ceiling expressed in f32 samples, for the in-loop/streaming sample counts.
+const MAX_SOURCE_SAMPLES: usize = (MAX_SOURCE_PCM_BYTES / SAMPLE_BYTES) as usize;
+
 /// Interleaved f32 PCM plus the source stream's rate and channel count.
 pub struct Decoded {
     pub samples: Vec<f32>,
@@ -105,7 +108,6 @@ pub fn decode_file(path: &Path) -> Result<Decoded, ScrybeError> {
     // Pre-size from the (guard-bounded) frame count to avoid ~log2(N) reallocs on
     // long files; the loop also caps growth for sources that don't declare length.
     let mut samples = Vec::with_capacity(presize_capacity(source_frames, channels));
-    let max_samples = (MAX_SOURCE_PCM_BYTES / SAMPLE_BYTES) as usize;
     let mut chunk: Vec<f32> = Vec::new();
     loop {
         match format.next_packet() {
@@ -116,7 +118,7 @@ pub fn decode_file(path: &Path) -> Result<Decoded, ScrybeError> {
                 match decoder.decode(&packet) {
                     Ok(decoded) => {
                         append_f32(&decoded, &mut chunk, &mut samples);
-                        if samples.len() > max_samples {
+                        if samples.len() > MAX_SOURCE_SAMPLES {
                             return Err(unsupported(
                                 "audio exceeds the in-memory decode limit; use `--jobs 1`, a shorter clip, or `--decoder ffmpeg`".to_owned(),
                             ));
@@ -267,8 +269,7 @@ pub fn decode_via_ffmpeg(path: &Path) -> Result<Decoded, ScrybeError> {
     // buffering the whole (possibly huge) stream first. `-v error` keeps stderr
     // tiny, so draining stdout before reading it cannot deadlock. The byte loop is
     // a pure, unit-tested helper; the child kill/wait stays here.
-    let max_samples = (MAX_SOURCE_PCM_BYTES / SAMPLE_BYTES) as usize;
-    let samples = match read_f32le_stream(&mut stdout, max_samples) {
+    let samples = match read_f32le_stream(&mut stdout, MAX_SOURCE_SAMPLES) {
         Ok(samples) => samples,
         Err(StreamError::Overflow) => {
             let _ = child.kill();

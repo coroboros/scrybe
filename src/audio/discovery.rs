@@ -3,6 +3,7 @@
 //! a file is decoded; here we filter by extension so non-audio (e.g. `.txt`) is
 //! never handed to the decoder.
 
+use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 
 /// Extensions treated as audio, limited to what the decoder can actually handle.
@@ -20,9 +21,10 @@ fn is_audio(path: &Path) -> bool {
 /// for deterministic ordering across runs.
 pub fn discover(inputs: &[PathBuf], recursive: bool) -> Vec<PathBuf> {
     let mut found = Vec::new();
+    let mut visited = HashSet::new();
     for input in inputs {
         if input.is_dir() {
-            scan_dir(input, recursive, &mut found);
+            scan_dir(input, recursive, &mut found, &mut visited);
         } else if is_audio(input) {
             found.push(input.clone());
         }
@@ -32,7 +34,13 @@ pub fn discover(inputs: &[PathBuf], recursive: bool) -> Vec<PathBuf> {
     found
 }
 
-fn scan_dir(dir: &Path, recursive: bool, out: &mut Vec<PathBuf>) {
+fn scan_dir(dir: &Path, recursive: bool, out: &mut Vec<PathBuf>, visited: &mut HashSet<PathBuf>) {
+    // Break symlink cycles: a directory whose real path we've already entered would
+    // otherwise recurse forever (e.g. `sub/loop -> ..`) and overflow the stack.
+    let canonical = dir.canonicalize().unwrap_or_else(|_| dir.to_path_buf());
+    if !visited.insert(canonical) {
+        return;
+    }
     let Ok(entries) = std::fs::read_dir(dir) else {
         return;
     };
@@ -40,7 +48,7 @@ fn scan_dir(dir: &Path, recursive: bool, out: &mut Vec<PathBuf>) {
         let path = entry.path();
         if path.is_dir() {
             if recursive {
-                scan_dir(&path, recursive, out);
+                scan_dir(&path, recursive, out, visited);
             }
         } else if is_audio(&path) {
             out.push(path);
@@ -106,5 +114,20 @@ mod tests {
             dup, expected,
             "discover output must be sorted and de-duplicated"
         );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn recursive_scan_survives_symlink_cycles() {
+        // `sub/loop -> root` is a directory cycle; recursion must terminate (not
+        // overflow the stack) and still find the real audio file.
+        let root = tempfile::tempdir().unwrap();
+        std::fs::write(root.path().join("a.wav"), b"x").unwrap();
+        let sub = root.path().join("sub");
+        std::fs::create_dir(&sub).unwrap();
+        std::os::unix::fs::symlink(root.path(), sub.join("loop")).unwrap();
+
+        let found = discover(std::slice::from_ref(&root.path().to_path_buf()), true);
+        assert!(found.iter().any(|p| p.ends_with("a.wav")));
     }
 }

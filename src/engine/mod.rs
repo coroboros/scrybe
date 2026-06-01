@@ -90,8 +90,10 @@ impl Engine {
     /// present, enables Silero voice-activity segmentation per transcription.
     pub fn load(model_path: &Path, vad_model_path: Option<&Path>) -> Result<Self, ScrybeError> {
         // Route whisper.cpp/GGML's chatty stderr into the (uninstalled) log
-        // backend, which silences it.
-        whisper_rs::install_logging_hooks();
+        // backend, which silences it. A process-global effect, so install it once
+        // even when multiple engines are loaded (e.g. across tests).
+        static LOG_HOOKS: std::sync::Once = std::sync::Once::new();
+        LOG_HOOKS.call_once(whisper_rs::install_logging_hooks);
         let mut params = WhisperContextParameters::default();
         params.use_gpu(active_backend() != Backend::Cpu);
         let ctx = WhisperContext::new_with_params(model_path, params)
