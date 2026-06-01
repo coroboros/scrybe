@@ -71,7 +71,8 @@ fn transcribe(cli: &Cli) -> Result<i32, ScrybeError> {
     }
 
     let files = audio::discover(&cli.paths, cli.recursive);
-    print_plan(cli, model);
+    let formats = cli.effective_formats();
+    print_plan(cli, model, &formats);
 
     if files.is_empty() {
         anstream::eprintln!(
@@ -80,12 +81,6 @@ fn transcribe(cli: &Cli) -> Result<i32, ScrybeError> {
         );
         return Ok(0);
     }
-
-    let formats: Vec<cli::Format> = if cli.json {
-        vec![cli::Format::Json]
-    } else {
-        cli.format.clone()
-    };
 
     // Fail loud rather than silently overwrite when two inputs map to one output.
     // Checked before the dry-run gate and model load, so a doomed run fails fast
@@ -132,7 +127,7 @@ fn transcribe(cli: &Cli) -> Result<i32, ScrybeError> {
             model: &model_name,
             duration: pcm.duration_secs(),
         };
-        anstream::println!("{}", output::render(&transcript, cli::Format::Json, &meta));
+        anstream::println!("{}", output::render(&transcript, formats[0], &meta));
         return Ok(0);
     }
     if cli.json {
@@ -250,12 +245,11 @@ fn list_models() {
 
 /// Print the fully-resolved invocation. Reports every flag so the plan is the
 /// single source of truth for what a run would do.
-fn print_plan(cli: &Cli, model: Model) {
+fn print_plan(cli: &Cli, model: Model, formats: &[cli::Format]) {
     let optional =
         |value: &Option<usize>| value.map_or_else(|| "auto".to_owned(), |n| n.to_string());
     let lang = cli.lang.as_deref().unwrap_or("auto");
-    let formats = cli
-        .format
+    let formats = formats
         .iter()
         .map(ToString::to_string)
         .collect::<Vec<_>>()

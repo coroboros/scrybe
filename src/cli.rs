@@ -66,7 +66,8 @@ pub struct Cli {
     #[arg(long, global = true)]
     pub no_color: bool,
 
-    /// Emit a single file's transcript as JSON on stdout.
+    /// Emit JSON; forces JSON output, overriding `--format`. A single input streams
+    /// to stdout, multiple inputs write `.json` sidecars.
     #[arg(long)]
     pub json: bool,
 
@@ -76,6 +77,19 @@ pub struct Cli {
 
     #[command(subcommand)]
     pub command: Option<Command>,
+}
+
+impl Cli {
+    /// The formats a run will actually write. `--json` forces JSON output,
+    /// overriding `--format`. Single source for the policy so the plan banner, the
+    /// collision check, and the writers all agree.
+    pub fn effective_formats(&self) -> Vec<Format> {
+        if self.json {
+            vec![Format::Json]
+        } else {
+            self.format.clone()
+        }
+    }
 }
 
 /// Top-level subcommands.

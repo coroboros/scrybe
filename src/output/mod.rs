@@ -287,6 +287,29 @@ mod tests {
     }
 
     #[test]
+    fn sanitized_clamps_and_orders_timestamps() {
+        // The shared timestamp guard behind every format (SRT only asserts it via
+        // rendered text). Negative start clamped, end >= start, cues non-overlapping.
+        let messy = [
+            Segment {
+                start: -1.0,
+                end: 2.0,
+                text: "a".to_owned(),
+            },
+            Segment {
+                start: 1.0,
+                end: 0.5,
+                text: "b".to_owned(),
+            },
+        ];
+        let timed = sanitized(&messy);
+        assert_eq!(timed[0].start, 0.0, "negative start clamped");
+        assert!(timed[0].end >= timed[0].start);
+        assert!(timed[1].start >= timed[0].end, "cues never overlap");
+        assert!(timed[1].end >= timed[1].start);
+    }
+
+    #[test]
     fn json_is_valid_and_versioned() {
         let json = render_json(
             &transcript(),

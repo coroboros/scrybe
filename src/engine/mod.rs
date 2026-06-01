@@ -224,14 +224,10 @@ fn load_error(path: &Path, detail: String) -> ScrybeError {
 }
 
 fn run_error(detail: String) -> ScrybeError {
-    if active_backend() == Backend::Cpu {
-        // A compute failure, not an I/O fault — give it its own actionable code.
-        ScrybeError::TranscriptionFailed { detail }
-    } else {
-        ScrybeError::GpuInitFailed {
-            detail: format!("transcription failed: {detail}"),
-        }
-    }
+    // `create_state`/`full` failures are runtime compute faults: the context — and
+    // thus the backend — already initialized in `Engine::load`. So this is never an
+    // init fault on any backend; `GpuInitFailed` is reserved for `load_error`.
+    ScrybeError::TranscriptionFailed { detail }
 }
 
 #[cfg(test)]

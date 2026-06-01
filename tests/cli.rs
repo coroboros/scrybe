@@ -252,8 +252,9 @@ fn json_multi_file_writes_sidecars_into_created_out_dir() {
     }
     let parent = tempfile::tempdir().unwrap();
     let out = parent.path().join("fresh"); // does not exist yet → exercises create_dir_all
+    // --format txt is passed but --json must override it: only .json is written.
     scrybe()
-        .args(["--model", "tiny", "--json", "--out-dir"])
+        .args(["--model", "tiny", "--json", "--format", "txt", "--out-dir"])
         .arg(&out)
         .args([
             "tests/fixtures/speech/en.wav",
@@ -271,6 +272,10 @@ fn json_multi_file_writes_sidecars_into_created_out_dir() {
     assert!(
         out.join("silence.json").exists(),
         "silence.json sidecar in the created dir"
+    );
+    assert!(
+        !out.join("en.txt").exists(),
+        "--json overrides --format txt: no .txt sidecar"
     );
 }
 
@@ -343,17 +348,26 @@ fn ctrl_c_stops_gracefully_with_partial_exit() {
         count_ext("srt"),
         "each completed file must write both txt and srt, or neither"
     );
-    // And a produced .srt is fully written, not truncated mid-cue.
-    let srt = std::fs::read_dir(&out)
-        .unwrap()
-        .flatten()
-        .map(|e| e.path())
-        .find(|p| p.extension().is_some_and(|x| x == "srt"))
-        .expect("at least one srt produced");
-    assert!(
-        std::fs::read_to_string(&srt).unwrap().contains("-->"),
-        "a completed .srt must be a well-formed cue file"
-    );
+    // And every produced sidecar is fully written, not truncated mid-cue.
+    let mut srt_seen = 0;
+    for entry in std::fs::read_dir(&out).unwrap().flatten() {
+        let path = entry.path();
+        match path.extension().and_then(|x| x.to_str()) {
+            Some("srt") => {
+                srt_seen += 1;
+                assert!(
+                    std::fs::read_to_string(&path).unwrap().contains("-->"),
+                    "every completed .srt must be a well-formed cue file: {path:?}"
+                );
+            }
+            Some("txt") => assert!(
+                !std::fs::read_to_string(&path).unwrap().is_empty(),
+                "every completed .txt must be non-empty: {path:?}"
+            ),
+            _ => {}
+        }
+    }
+    assert!(srt_seen >= 1, "expected at least one completed .srt");
 }
 
 #[test]
@@ -442,6 +456,36 @@ fn uncreatable_out_dir_exits_io_error() {
         .failure()
         .code(1)
         .stderr(predicate::str::contains("could not create out-dir"));
+}
+
+#[test]
+fn json_flag_is_reflected_in_the_plan_banner() {
+    // --json forces JSON output; the plan banner must report format=json, not the
+    // raw --format default. Model-free via --dry-run.
+    scrybe()
+        .args(["--dry-run", "--json", "tests/fixtures/speech/en.wav"])
+        .assert()
+        .success()
+        .stderr(predicate::str::contains("format=json"));
+}
+
+#[test]
+fn threads_override_is_reflected_in_the_plan_banner() {
+    scrybe()
+        .args([
+            "--dry-run",
+            "--threads",
+            "2",
+            "tests/fixtures/speech/en.wav",
+        ])
+        .assert()
+        .success()
+        .stderr(predicate::str::contains("threads=2"));
+    scrybe()
+        .args(["--dry-run", "tests/fixtures/speech/en.wav"])
+        .assert()
+        .success()
+        .stderr(predicate::str::contains("threads=auto"));
 }
 
 #[test]

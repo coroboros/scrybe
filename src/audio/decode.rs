@@ -81,16 +81,13 @@ pub fn decode_file(path: &Path) -> Result<Decoded, ScrybeError> {
 
     // Reject sources whose raw PCM would exhaust memory before the resample frees
     // it (the memory guard models the post-resample buffer, not this transient).
-    if let Some(frames) = source_frames {
-        let bytes = frames
-            .saturating_mul(u64::from(channels))
-            .saturating_mul(SAMPLE_BYTES);
-        if bytes > MAX_SOURCE_PCM_BYTES {
-            return Err(unsupported(format!(
-                "audio is too large to decode in memory (~{} raw); use `--jobs 1`, a shorter clip, or `--decoder ffmpeg`",
-                crate::model::human_size(bytes),
-            )));
-        }
+    if let Some(frames) = source_frames
+        && exceeds_decode_ceiling(frames, channels)
+    {
+        return Err(unsupported(format!(
+            "audio is too large to decode in memory (~{} raw); use `--jobs 1`, a shorter clip, or `--decoder ffmpeg`",
+            crate::model::human_size(raw_pcm_bytes(frames, channels)),
+        )));
     }
 
     if let Some(extra) = audio_params.extra_data.as_deref()
@@ -152,6 +149,20 @@ pub fn decode_file(path: &Path) -> Result<Decoded, ScrybeError> {
         sample_rate,
         channels,
     })
+}
+
+/// Raw interleaved f32 PCM bytes a source of `frames` × `channels` would decode to.
+fn raw_pcm_bytes(frames: u64, channels: u16) -> u64 {
+    frames
+        .saturating_mul(u64::from(channels))
+        .saturating_mul(SAMPLE_BYTES)
+}
+
+/// Whether a source's raw PCM would exceed the in-memory decode ceiling. Derived
+/// from `MAX_SOURCE_PCM_BYTES` so the security-relevant fail-loud branch is
+/// testable and cannot silently desync from the budget.
+fn exceeds_decode_ceiling(frames: u64, channels: u16) -> bool {
+    raw_pcm_bytes(frames, channels) > MAX_SOURCE_PCM_BYTES
 }
 
 /// Initial capacity for the decode buffer. Pre-sizes to the declared frame count
@@ -386,6 +397,20 @@ mod tests {
         // it as HE-AAC; structural parsing stops at the channel config and treats
         // it as plain AAC-LC. (Same bytes as the positive fixture, channels → 0.)
         assert!(!is_he_aac_asc(&[0x14, 0x00, 0x56, 0xe5, 0xa8]));
+    }
+
+    #[test]
+    fn decode_ceiling_rejects_oversized_sources() {
+        // Just over the ceiling (in frames) is rejected; a normal clip passes.
+        let frames_at_ceiling = MAX_SOURCE_PCM_BYTES / SAMPLE_BYTES; // mono
+        assert!(!exceeds_decode_ceiling(frames_at_ceiling, 1));
+        assert!(exceeds_decode_ceiling(frames_at_ceiling + 1, 1));
+        // Channels multiply the raw size: half the frames in stereo still exceeds.
+        assert!(exceeds_decode_ceiling(frames_at_ceiling / 2 + 1, 2));
+        // A crafted huge frame count saturates rather than wrapping → rejected.
+        assert!(exceeds_decode_ceiling(u64::MAX, 8));
+        // A short clip is fine.
+        assert!(!exceeds_decode_ceiling(16_000 * 60, 1)); // 1 min mono
     }
 
     #[test]
