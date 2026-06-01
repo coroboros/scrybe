@@ -188,4 +188,78 @@ mod tests {
             assert_eq!(err.exit_code(), code, "{err:?}");
         }
     }
+
+    #[test]
+    fn display_messages_carry_their_actionable_token() {
+        // The single red actionable line is part of the WS-1 contract; pin every
+        // variant so a dropped recovery hint or broken interpolation fails a test.
+        let cases: [(ScrybeError, &str); 10] = [
+            (
+                ScrybeError::unsupported_codec(Path::new("/a.m4a"), "HE-AAC"),
+                "--decoder ffmpeg",
+            ),
+            (
+                ScrybeError::ModelDownloadFailed {
+                    model: "tiny".to_owned(),
+                    detail: String::new(),
+                },
+                "models pull tiny",
+            ),
+            (
+                ScrybeError::ModelLoadFailed {
+                    path: PathBuf::from("/m.bin"),
+                    detail: String::new(),
+                },
+                "/m.bin",
+            ),
+            (
+                ScrybeError::OutOfMemory {
+                    detail: String::new(),
+                },
+                "smaller `--model`",
+            ),
+            (
+                ScrybeError::GpuInitFailed {
+                    detail: String::new(),
+                },
+                "--jobs 1",
+            ),
+            (
+                ScrybeError::FileNotFound {
+                    path: PathBuf::from("/x.wav"),
+                },
+                "/x.wav",
+            ),
+            (
+                ScrybeError::TranscriptionFailed {
+                    detail: String::new(),
+                },
+                "smaller `--model`",
+            ),
+            (
+                ScrybeError::PartialBatchFailure {
+                    failed: 1,
+                    total: 2,
+                },
+                "1 of 2",
+            ),
+            (
+                ScrybeError::Interrupted {
+                    completed: 1,
+                    total: 2,
+                },
+                "no files were lost",
+            ),
+            (
+                ScrybeError::Io {
+                    detail: String::new(),
+                },
+                "I/O error",
+            ),
+        ];
+        for (err, token) in cases {
+            let rendered = err.to_string();
+            assert!(rendered.contains(token), "{rendered:?} lacks {token:?}");
+        }
+    }
 }

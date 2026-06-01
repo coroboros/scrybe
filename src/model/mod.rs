@@ -124,12 +124,17 @@ fn estimated_memory(model: Model, jobs: usize) -> u64 {
 /// processes.
 const MEMORY_BUDGET_PERCENT: u64 = 85;
 
-/// Whether transcribing `model` at `jobs` would exceed the memory budget. Multiply
-/// before dividing so the percentage doesn't truncate the byte total; `saturating_mul`
-/// keeps the function total over its whole `u64` domain (it is public and tested
-/// with synthetic RAM values).
+/// Bytes a run may use: `MEMORY_BUDGET_PERCENT`% of detected RAM. Single source so
+/// every guard agrees. Multiply before dividing so the percentage doesn't truncate
+/// the byte total; `saturating_mul` keeps it total over the whole `u64` domain (the
+/// guards are tested with synthetic RAM values).
+const fn memory_budget(total_ram: u64) -> u64 {
+    total_ram.saturating_mul(MEMORY_BUDGET_PERCENT) / 100
+}
+
+/// Whether transcribing `model` at `jobs` would exceed the memory budget.
 pub(crate) fn would_exceed_memory(total_ram: u64, model: Model, jobs: usize) -> bool {
-    estimated_memory(model, jobs) > total_ram.saturating_mul(MEMORY_BUDGET_PERCENT) / 100
+    estimated_memory(model, jobs) > memory_budget(total_ram)
 }
 
 /// The largest model that fits at `jobs` concurrent jobs, for the smart default and
@@ -157,7 +162,7 @@ pub fn resolve_model(explicit: Option<Model>, total_ram: Option<u64>, jobs: usiz
 /// RAM on its own; the auto job count is clamped to this against the smallest model
 /// so a zero-config run is never refused by its own guard.
 pub(crate) fn max_jobs_fitting(total_ram: u64, model: Model) -> usize {
-    let budget = total_ram / 100 * MEMORY_BUDGET_PERCENT;
+    let budget = memory_budget(total_ram);
     let info = info(model);
     let resident = info.size + info.size / 2; // weights + working set, resident once
     ((budget.saturating_sub(resident) / DECODE_BUFFER) as usize).max(1)
