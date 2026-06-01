@@ -6,11 +6,12 @@ use rubato::{Fft, FixedSync, Resampler};
 use super::TARGET_SAMPLE_RATE;
 
 /// Resample a mono signal from `src_rate` to 16 kHz. A no-op when already at the
-/// target rate. Single-channel data is laid out as a flat (interleaved-by-1)
-/// buffer. Errors are returned as a message; the caller attaches the path.
-pub fn to_16k_mono(mono: &[f32], src_rate: u32) -> Result<Vec<f32>, String> {
+/// target rate (returns the input buffer unchanged). Single-channel data is laid
+/// out as a flat (interleaved-by-1) buffer. Errors are returned as a message; the
+/// caller attaches the path.
+pub fn to_16k_mono(mono: Vec<f32>, src_rate: u32) -> Result<Vec<f32>, String> {
     if src_rate == TARGET_SAMPLE_RATE {
-        return Ok(mono.to_vec());
+        return Ok(mono);
     }
     if mono.is_empty() {
         return Ok(Vec::new());
@@ -35,7 +36,7 @@ pub fn to_16k_mono(mono: &[f32], src_rate: u32) -> Result<Vec<f32>, String> {
 
     let in_frames = mono.len();
     let input =
-        InterleavedSlice::new(mono, channels, in_frames).map_err(|e| fail(e.to_string()))?;
+        InterleavedSlice::new(&mono, channels, in_frames).map_err(|e| fail(e.to_string()))?;
 
     let out_capacity = resampler.process_all_needed_output_len(in_frames);
     let mut out = vec![0.0f32; out_capacity];
@@ -59,7 +60,7 @@ mod tests {
         // 1 s of 44.1 kHz → ~16 k samples at 16 kHz (±2% for filter delay trim).
         let src_rate = 44_100;
         let input = vec![0.0f32; src_rate as usize];
-        let out = to_16k_mono(&input, src_rate).unwrap();
+        let out = to_16k_mono(input, src_rate).unwrap();
         let expected = TARGET_SAMPLE_RATE as f64;
         let ratio = out.len() as f64 / expected;
         assert!(
@@ -72,6 +73,9 @@ mod tests {
     #[test]
     fn passthrough_at_target_rate() {
         let input = vec![0.1f32, 0.2, 0.3];
-        assert_eq!(to_16k_mono(&input, TARGET_SAMPLE_RATE).unwrap(), input);
+        assert_eq!(
+            to_16k_mono(input.clone(), TARGET_SAMPLE_RATE).unwrap(),
+            input
+        );
     }
 }

@@ -19,10 +19,16 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      # whisper.cpp is built from source by whisper-rs-sys.
-      - name: Install cmake (Linux)
-        if: runner.os == 'Linux'
-        run: sudo apt-get update && sudo apt-get install -y cmake
+      # cmake builds whisper.cpp (whisper-rs-sys); ffmpeg exercises the decoder
+      # fallback tests deterministically.
+      - name: Install cmake + ffmpeg
+        shell: bash
+        run: |
+          if [ "$RUNNER_OS" = "Linux" ]; then
+            sudo apt-get update && sudo apt-get install -y cmake ffmpeg
+          else
+            brew install ffmpeg
+          fi
 
       - name: Cache cargo registry + build
         uses: Swatinem/rust-cache@v2

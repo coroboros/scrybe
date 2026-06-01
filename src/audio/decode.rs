@@ -28,10 +28,7 @@ pub struct Decoded {
 /// Decode with symphonia. Fails loud (no silent/garbled output) on unsupported
 /// codecs, including HE-AAC, pointing the user at the ffmpeg escape.
 pub fn decode_file(path: &Path) -> Result<Decoded, ScrybeError> {
-    let unsupported = |detail: String| ScrybeError::UnsupportedCodec {
-        path: path.to_path_buf(),
-        detail,
-    };
+    let unsupported = |detail: String| ScrybeError::unsupported_codec(path, detail);
 
     let file = std::fs::File::open(path).map_err(|e| unsupported(e.to_string()))?;
     let mss = MediaSourceStream::new(Box::new(file), Default::default());
@@ -121,14 +118,13 @@ fn append_f32(decoded: &GenericAudioBufferRef<'_>, chunk: &mut Vec<f32>, out: &m
 /// Decode by shelling out to a system `ffmpeg`, producing 16 kHz mono f32 PCM
 /// directly. The escape hatch for codecs symphonia cannot handle (e.g. HE-AAC).
 pub fn decode_via_ffmpeg(path: &Path) -> Result<Decoded, ScrybeError> {
-    let unsupported = |detail: String| ScrybeError::UnsupportedCodec {
-        path: path.to_path_buf(),
-        detail,
-    };
+    let unsupported = |detail: String| ScrybeError::unsupported_codec(path, detail);
 
+    // Canonicalize so a leading-dash path can't be parsed by ffmpeg as an option.
+    let input = std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
     let output = Command::new("ffmpeg")
         .args(["-v", "error", "-i"])
-        .arg(path)
+        .arg(&input)
         .args(["-f", "f32le", "-acodec", "pcm_f32le", "-ac", "1", "-ar"])
         .arg(TARGET_SAMPLE_RATE.to_string())
         .arg("pipe:1")

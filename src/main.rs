@@ -52,11 +52,20 @@ fn transcribe(cli: &Cli) -> Result<i32, ScrybeError> {
         }
     }
 
-    // Refuse before doing work if the model + job count cannot fit in memory.
-    model::guard_memory(cli.model, cli.jobs.unwrap_or(1))?;
+    // Resolve concurrency up front so the memory guard checks the jobs that will
+    // actually run and the CPU thread budget is split across them.
+    let backend = engine::active_backend();
+    let (jobs, clamp_note) = batch::resolve_jobs(cli.jobs, backend);
+    model::guard_memory(cli.model, jobs)?;
 
     if let Some(code) = validate_model_capabilities(cli) {
         return Ok(code);
+    }
+
+    if let Some(dir) = cli.out_dir.as_deref() {
+        std::fs::create_dir_all(dir).map_err(|e| ScrybeError::Io {
+            detail: format!("could not create out-dir {}: {e}", dir.display()),
+        })?;
     }
 
     let files = audio::discover(&cli.paths, cli.recursive);
@@ -82,20 +91,35 @@ fn transcribe(cli: &Cli) -> Result<i32, ScrybeError> {
     }
 
     let model_path = model::ensure_available(cli.model, cli.offline)?;
-    let engine = engine::Engine::load(&model_path)?;
+    let vad_path = match model::ensure_vad(cli.offline) {
+        Ok(path) => Some(path),
+        Err(_) => {
+            anstream::eprintln!(
+                "{}",
+                color::paint(
+                    color::WARN,
+                    "voice-activity model unavailable — using no-speech gating only",
+                )
+            );
+            None
+        }
+    };
+    let engine = engine::Engine::load(&model_path, vad_path.as_deref())?;
 
+    let threads = cli
+        .threads
+        .unwrap_or_else(|| (batch::detected_parallelism() / jobs).max(1));
     let options = engine::TranscribeOptions {
         language: cli.lang.clone(),
         translate: cli.task == Task::Translate,
-        threads: cli.threads.unwrap_or_else(default_threads),
+        threads,
     };
     let model_name = cli.model.to_string();
 
     // `--json` on a single file streams to stdout for piping; no batch UI.
     if cli.json && files.len() == 1 {
-        let file = &files[0];
-        let pcm = audio::load_audio(file, cli.decoder)?;
-        let transcript = engine.transcribe(&pcm.samples, &options)?;
+        let pcm = audio::load_audio(&files[0], cli.decoder)?;
+        let transcript = engine.transcribe(&pcm.samples, &options, |_| {})?;
         let meta = output::Meta {
             model: &model_name,
             duration: pcm.duration_secs(),
@@ -103,9 +127,16 @@ fn transcribe(cli: &Cli) -> Result<i32, ScrybeError> {
         anstream::println!("{}", output::render(&transcript, cli::Format::Json, &meta));
         return Ok(0);
     }
+    if cli.json {
+        anstream::eprintln!(
+            "{}",
+            color::paint(
+                color::WARN,
+                "--json with multiple inputs: writing .json sidecars (stdout streaming is single-file only)",
+            )
+        );
+    }
 
-    let backend = engine::active_backend();
-    let (jobs, clamp_note) = batch::resolve_jobs(cli.jobs, backend);
     anstream::eprintln!(
         "{}",
         color::paint(
@@ -132,11 +163,6 @@ fn transcribe(cli: &Cli) -> Result<i32, ScrybeError> {
         jobs,
     };
     batch::run(&engine, &files, &config)
-}
-
-/// Default decode threads: the machine's parallelism, or 4 when unknown.
-fn default_threads() -> usize {
-    std::thread::available_parallelism().map_or(4, |n| n.get())
 }
 
 /// Reject model + task/language combinations the model cannot serve, before any
@@ -181,10 +207,7 @@ fn run_models(action: &ModelsAction, offline: bool) -> Result<(), ScrybeError> {
         ModelsAction::Remove { model } => {
             match model::cached_path(*model) {
                 Some(path) => {
-                    if let Ok(real) = std::fs::canonicalize(&path) {
-                        let _ = std::fs::remove_file(&real);
-                    }
-                    let _ = std::fs::remove_file(&path);
+                    model::evict(&path);
                     anstream::println!("{} {model}", color::paint(color::SUCCESS, "removed"));
                 }
                 None => {

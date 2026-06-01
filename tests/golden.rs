@@ -23,7 +23,7 @@ fn english_clip_within_wer_tolerance() {
         return;
     };
 
-    let engine = Engine::load(&model_path).expect("load tiny model");
+    let engine = Engine::load(&model_path, None).expect("load tiny model");
     let pcm = audio::load_audio(
         Path::new("tests/fixtures/speech/en.wav"),
         Decoder::Symphonia,
@@ -35,7 +35,7 @@ fn english_clip_within_wer_tolerance() {
         threads: 4,
     };
     let transcript = engine
-        .transcribe(&pcm.samples, &options)
+        .transcribe(&pcm.samples, &options, |_| {})
         .expect("transcribe");
     let hypothesis = transcript
         .segments

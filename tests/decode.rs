@@ -67,6 +67,18 @@ fn ffmpeg_fallback_decodes_he_aac() {
     assert!(!pcm.samples.is_empty());
 }
 
+#[test]
+fn ffmpeg_rejects_non_audio_with_exit_10() {
+    if which_ffmpeg().is_none() {
+        eprintln!("skipping: ffmpeg not on PATH");
+        return;
+    }
+    // A non-audio file drives ffmpeg's failure branch, mapped to exit 10.
+    let err = decode("tests/fixtures/audio/notes.txt", Decoder::Ffmpeg).unwrap_err();
+    assert_eq!(err.exit_code(), 10);
+    assert!(err.to_string().contains("ffmpeg failed"), "got: {err}");
+}
+
 fn which_ffmpeg() -> Option<()> {
     std::process::Command::new("ffmpeg")
         .arg("-version")

@@ -6,19 +6,18 @@
 //! `clap`, which exits `2`.
 
 use std::fmt;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
-// Variants beyond `FileNotFound` are constructed by the decode, model-cache,
-// engine, and batch stages added in later milestones; their exit codes are
-// fixed here so the contract is stable from the first release.
-#[allow(dead_code)]
 /// A user-facing failure carrying enough context to render an actionable line.
+/// Exit codes are stable across releases — only ever add, never renumber.
 #[derive(Debug)]
 pub enum ScrybeError {
     /// Audio uses a codec the decoder cannot handle (e.g. HE-AAC/SBR).
     UnsupportedCodec { path: PathBuf, detail: String },
     /// A model could not be fetched or read from cache.
     ModelDownloadFailed { model: String, detail: String },
+    /// A cached model file could not be loaded (corrupt or incompatible ggml).
+    ModelLoadFailed { path: PathBuf, detail: String },
     /// The chosen model plus job count exceeds available memory.
     OutOfMemory { detail: String },
     /// The GPU backend failed to initialize.
@@ -32,6 +31,14 @@ pub enum ScrybeError {
 }
 
 impl ScrybeError {
+    /// Build an [`UnsupportedCodec`](Self::UnsupportedCodec) for `path`.
+    pub fn unsupported_codec(path: &Path, detail: impl Into<String>) -> Self {
+        Self::UnsupportedCodec {
+            path: path.to_path_buf(),
+            detail: detail.into(),
+        }
+    }
+
     /// The process exit code for this failure. Stable across releases.
     pub const fn exit_code(&self) -> i32 {
         match self {
@@ -40,6 +47,7 @@ impl ScrybeError {
             Self::OutOfMemory { .. } => 12,
             Self::GpuInitFailed { .. } => 13,
             Self::FileNotFound { .. } => 14,
+            Self::ModelLoadFailed { .. } => 15,
             Self::PartialBatchFailure { .. } => 20,
             Self::Io { .. } => 1,
         }
@@ -58,6 +66,11 @@ impl fmt::Display for ScrybeError {
             Self::ModelDownloadFailed { model, detail } => write!(
                 f,
                 "could not obtain model `{model}`: {detail}. Check the network or pre-fetch with `scrybe models pull {model}`.",
+            ),
+            Self::ModelLoadFailed { path, detail } => write!(
+                f,
+                "could not load model {}: {detail}. The file may be a corrupt or incompatible ggml — re-fetch with `scrybe models pull` or pick a different `--model`.",
+                path.display(),
             ),
             Self::OutOfMemory { detail } => write!(
                 f,
@@ -80,3 +93,69 @@ impl fmt::Display for ScrybeError {
 }
 
 impl std::error::Error for ScrybeError {}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn exit_codes_match_the_documented_contract() {
+        let cases: [(ScrybeError, i32); 8] = [
+            (
+                ScrybeError::Io {
+                    detail: String::new(),
+                },
+                1,
+            ),
+            (
+                ScrybeError::UnsupportedCodec {
+                    path: PathBuf::new(),
+                    detail: String::new(),
+                },
+                10,
+            ),
+            (
+                ScrybeError::ModelDownloadFailed {
+                    model: String::new(),
+                    detail: String::new(),
+                },
+                11,
+            ),
+            (
+                ScrybeError::OutOfMemory {
+                    detail: String::new(),
+                },
+                12,
+            ),
+            (
+                ScrybeError::GpuInitFailed {
+                    detail: String::new(),
+                },
+                13,
+            ),
+            (
+                ScrybeError::FileNotFound {
+                    path: PathBuf::new(),
+                },
+                14,
+            ),
+            (
+                ScrybeError::ModelLoadFailed {
+                    path: PathBuf::new(),
+                    detail: String::new(),
+                },
+                15,
+            ),
+            (
+                ScrybeError::PartialBatchFailure {
+                    failed: 1,
+                    total: 2,
+                },
+                20,
+            ),
+        ];
+        for (err, code) in cases {
+            assert_eq!(err.exit_code(), code, "{err:?}");
+        }
+    }
+}

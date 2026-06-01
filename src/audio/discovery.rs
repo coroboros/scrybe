@@ -50,6 +50,7 @@ fn scan_dir(dir: &Path, recursive: bool, out: &mut Vec<PathBuf>) {
 
 #[cfg(test)]
 mod tests {
+    #![allow(clippy::unwrap_used, clippy::expect_used)]
     use super::*;
 
     #[test]
@@ -58,5 +59,42 @@ mod tests {
         assert!(is_audio(Path::new("clip.flac")));
         assert!(!is_audio(Path::new("notes.txt")));
         assert!(!is_audio(Path::new("no_extension")));
+    }
+
+    #[test]
+    fn recursion_dedup_and_stable_ordering() {
+        let root = tempfile::tempdir().unwrap();
+        std::fs::write(root.path().join("a.wav"), b"x").unwrap();
+        std::fs::write(root.path().join("notes.txt"), b"x").unwrap();
+        std::fs::create_dir(root.path().join("sub")).unwrap();
+        std::fs::write(root.path().join("sub").join("b.mp3"), b"x").unwrap();
+        let root_path = root.path().to_path_buf();
+
+        let flat = discover(std::slice::from_ref(&root_path), false);
+        assert!(flat.iter().any(|p| p.ends_with("a.wav")));
+        assert!(
+            !flat.iter().any(|p| p.ends_with("b.mp3")),
+            "must not recurse without --recursive"
+        );
+        assert!(
+            !flat.iter().any(|p| p.ends_with("notes.txt")),
+            "non-audio is skipped"
+        );
+
+        let deep = discover(std::slice::from_ref(&root_path), true);
+        assert!(
+            deep.iter().any(|p| p.ends_with("b.mp3")),
+            "recurses with --recursive"
+        );
+
+        // The same directory passed twice yields a sorted, de-duplicated list.
+        let dup = discover(&[root_path.clone(), root_path], true);
+        let mut expected = dup.clone();
+        expected.sort();
+        expected.dedup();
+        assert_eq!(
+            dup, expected,
+            "discover output must be sorted and de-duplicated"
+        );
     }
 }

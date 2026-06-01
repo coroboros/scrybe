@@ -8,11 +8,11 @@ everywhere, no Python and no system `ffmpeg`.
 
 ## Status
 
-In progress. Audio decode, the model cache, and the whisper.cpp engine (VAD-free
-quality gating, language auto-detect, timestamped segments) work on the CPU
-backend. Parallel batch orchestration, output writers, and distribution are
-landing. Metal is a build feature (`--features metal`) for Apple Silicon; the
-default build is CPU so it compiles anywhere.
+In progress. Audio decode, the model cache, and the whisper.cpp engine (Silero
+voice-activity segmentation, quality gating, language auto-detect, timestamped
+segments) work on the CPU backend, with parallel batch orchestration and the
+output writers. Metal is a build feature (`--features metal`) for Apple Silicon;
+the default build is CPU so it compiles anywhere.
 
 ## Install
 

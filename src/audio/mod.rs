@@ -38,25 +38,24 @@ pub fn load_audio(path: &Path, decoder: Decoder) -> Result<AudioPcm, ScrybeError
         Decoder::Symphonia => decode::decode_file(path)?,
         Decoder::Ffmpeg => decode::decode_via_ffmpeg(path)?,
     };
-    let mono = downmix(&decoded.samples, decoded.channels);
-    let samples = resample::to_16k_mono(&mono, decoded.sample_rate).map_err(|detail| {
-        ScrybeError::UnsupportedCodec {
-            path: path.to_path_buf(),
-            detail,
-        }
-    })?;
+    let source_sample_rate = decoded.sample_rate;
+    let source_channels = decoded.channels;
+    let mono = downmix(decoded.samples, source_channels);
+    let samples = resample::to_16k_mono(mono, source_sample_rate)
+        .map_err(|detail| ScrybeError::unsupported_codec(path, detail))?;
     Ok(AudioPcm {
         samples,
-        source_sample_rate: decoded.sample_rate,
-        source_channels: decoded.channels,
+        source_sample_rate,
+        source_channels,
     })
 }
 
-/// Average interleaved channels down to a single mono channel.
-fn downmix(interleaved: &[f32], channels: u16) -> Vec<f32> {
+/// Average interleaved channels down to a single mono channel. Takes ownership so
+/// the already-mono common case returns the buffer without a copy.
+fn downmix(interleaved: Vec<f32>, channels: u16) -> Vec<f32> {
     let channels = usize::from(channels.max(1));
     if channels == 1 {
-        return interleaved.to_vec();
+        return interleaved;
     }
     interleaved
         .chunks_exact(channels)
@@ -72,13 +71,13 @@ mod tests {
     #[test]
     fn downmix_averages_stereo_to_mono() {
         // L/R interleaved: (1.0,0.0),(0.0,1.0),(0.5,0.5) → 0.5,0.5,0.5
-        let stereo = [1.0, 0.0, 0.0, 1.0, 0.5, 0.5];
-        assert_eq!(downmix(&stereo, 2), vec![0.5, 0.5, 0.5]);
+        let stereo = vec![1.0, 0.0, 0.0, 1.0, 0.5, 0.5];
+        assert_eq!(downmix(stereo, 2), vec![0.5, 0.5, 0.5]);
     }
 
     #[test]
     fn downmix_mono_is_passthrough() {
-        let mono = [0.1, 0.2, 0.3];
-        assert_eq!(downmix(&mono, 1), mono);
+        let mono = vec![0.1, 0.2, 0.3];
+        assert_eq!(downmix(mono.clone(), 1), mono);
     }
 }

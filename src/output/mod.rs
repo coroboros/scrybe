@@ -268,4 +268,81 @@ mod tests {
     fn txt_is_one_segment_per_line() {
         assert_eq!(render_txt(&transcript()), "Hello world\nsecond line\n");
     }
+
+    #[test]
+    fn vtt_has_header_and_dot_separator() {
+        let vtt = render_vtt(&transcript());
+        assert!(vtt.starts_with("WEBVTT\n\n"), "missing header:\n{vtt}");
+        assert!(vtt.contains("00:00:00.000 --> 00:00:01.500"));
+        assert!(vtt.contains("Hello world"));
+    }
+
+    #[test]
+    fn tsv_has_header_and_millisecond_rows() {
+        let tsv = render_tsv(&transcript());
+        assert!(tsv.starts_with("start\tend\ttext\n"));
+        assert!(tsv.contains("0\t1500\tHello world"));
+        assert!(tsv.contains("1500\t3000\tsecond line"));
+    }
+
+    #[test]
+    fn output_path_extension_and_directory() {
+        let input = Path::new("/a/b/clip.wav");
+        assert_eq!(
+            output_path(input, Format::Txt, None),
+            PathBuf::from("/a/b/clip.txt")
+        );
+        assert_eq!(
+            output_path(input, Format::Json, Some(Path::new("/out"))),
+            PathBuf::from("/out/clip.json"),
+        );
+        // Same stem, different formats → different files.
+        assert_ne!(
+            output_path(input, Format::Srt, None),
+            output_path(input, Format::Vtt, None),
+        );
+        // A no-extension input keeps its whole name as the stem.
+        assert_eq!(
+            output_path(Path::new("/a/clip"), Format::Tsv, None),
+            PathBuf::from("/a/clip.tsv")
+        );
+    }
+
+    #[test]
+    fn outputs_up_to_date_tracks_mtimes_and_missing() {
+        use std::time::{Duration, SystemTime};
+        let dir = tempfile::tempdir().unwrap();
+        let input = dir.path().join("clip.wav");
+        std::fs::write(&input, b"x").unwrap();
+        let formats = [Format::Txt];
+
+        // No output yet → stale.
+        assert!(!outputs_up_to_date(&input, &formats, None));
+
+        let out = output_path(&input, Format::Txt, None);
+        std::fs::write(&out, b"y").unwrap();
+        let touch = |path: &Path, when: SystemTime| {
+            std::fs::File::options()
+                .write(true)
+                .open(path)
+                .unwrap()
+                .set_modified(when)
+                .unwrap();
+        };
+
+        // Output older than input → stale.
+        touch(&out, SystemTime::now() - Duration::from_secs(60));
+        assert!(!outputs_up_to_date(&input, &formats, None));
+
+        // Output newer than input → up to date.
+        touch(&out, SystemTime::now() + Duration::from_secs(60));
+        assert!(outputs_up_to_date(&input, &formats, None));
+
+        // A nonexistent input has no metadata → stale (never skip).
+        assert!(!outputs_up_to_date(
+            Path::new("/no/such/input.wav"),
+            &formats,
+            None
+        ));
+    }
 }

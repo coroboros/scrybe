@@ -8,7 +8,7 @@
 //! dropped so silence does not hallucinate text.
 
 use std::fmt;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use whisper_rs::{FullParams, SamplingStrategy, WhisperContext, WhisperContextParameters};
 
@@ -75,22 +75,27 @@ pub struct TranscribeOptions {
     pub threads: usize,
 }
 
-/// A loaded model, reusable across files.
+/// A loaded model, reusable across files, plus the optional VAD model.
 pub struct Engine {
     ctx: WhisperContext,
+    vad_model_path: Option<PathBuf>,
 }
 
 impl Engine {
-    /// Load a ggml model from disk onto the active backend.
-    pub fn load(model_path: &Path) -> Result<Self, ScrybeError> {
+    /// Load a ggml model from disk onto the active backend. `vad_model_path`, when
+    /// present, enables Silero voice-activity segmentation per transcription.
+    pub fn load(model_path: &Path, vad_model_path: Option<&Path>) -> Result<Self, ScrybeError> {
         // Route whisper.cpp/GGML's chatty stderr into the (uninstalled) log
         // backend, which silences it.
         whisper_rs::install_logging_hooks();
         let mut params = WhisperContextParameters::default();
         params.use_gpu(active_backend() != Backend::Cpu);
         let ctx = WhisperContext::new_with_params(model_path, params)
-            .map_err(|e| load_error(e.to_string()))?;
-        Ok(Self { ctx })
+            .map_err(|e| load_error(model_path, e.to_string()))?;
+        Ok(Self {
+            ctx,
+            vad_model_path: vad_model_path.map(Path::to_path_buf),
+        })
     }
 
     /// Transcribe 16 kHz mono f32 PCM. whisper.cpp handles long-audio windowing
@@ -99,6 +104,7 @@ impl Engine {
         &self,
         pcm: &[f32],
         opts: &TranscribeOptions,
+        progress: impl FnMut(i32) + 'static,
     ) -> Result<Transcript, ScrybeError> {
         let mut state = self
             .ctx
@@ -121,14 +127,23 @@ impl Engine {
         params.set_entropy_thold(2.4);
         params.set_suppress_blank(true);
         params.set_suppress_nst(true);
-        params.set_token_timestamps(true);
         params.set_print_progress(false);
         params.set_print_realtime(false);
         params.set_print_special(false);
         params.set_print_timestamps(false);
 
+        // Voice-activity segmentation when the Silero model is present — the
+        // spec's mandated correctness floor; the no-speech filter below stays as a
+        // second layer. enable_vad panics unless a path is set first, so it is
+        // gated on a valid path.
+        if let Some(vad) = self.vad_model_path.as_deref().and_then(Path::to_str) {
+            params.set_vad_model_path(Some(vad));
+            params.enable_vad(true);
+        }
+
         let language = opts.language.as_deref().unwrap_or("auto");
         params.set_language(Some(language));
+        params.set_progress_callback_safe(progress);
 
         state
             .full(params, pcm)
@@ -173,11 +188,13 @@ impl Engine {
     }
 }
 
-fn load_error(detail: String) -> ScrybeError {
+fn load_error(path: &Path, detail: String) -> ScrybeError {
     if active_backend() == Backend::Cpu {
-        ScrybeError::ModelDownloadFailed {
-            model: "<loaded model>".to_owned(),
-            detail: format!("could not load model: {detail}"),
+        // A SHA-verified file that fails to load is a corrupt/incompatible ggml,
+        // not a download or GPU fault.
+        ScrybeError::ModelLoadFailed {
+            path: path.to_path_buf(),
+            detail,
         }
     } else {
         ScrybeError::GpuInitFailed { detail }
@@ -185,8 +202,11 @@ fn load_error(detail: String) -> ScrybeError {
 }
 
 fn run_error(detail: String) -> ScrybeError {
-    ScrybeError::GpuInitFailed {
-        detail: format!("transcription failed: {detail}"),
+    let detail = format!("transcription failed: {detail}");
+    if active_backend() == Backend::Cpu {
+        ScrybeError::Io { detail }
+    } else {
+        ScrybeError::GpuInitFailed { detail }
     }
 }
 
@@ -199,5 +219,16 @@ mod tests {
         assert_eq!(active_backend(), Backend::Cpu);
         assert_eq!(Backend::Cpu.to_string(), "CPU");
         assert_eq!(Backend::Metal.to_string(), "Metal");
+    }
+
+    #[test]
+    fn cpu_engine_errors_are_not_labelled_gpu() {
+        // On the default CPU build, load and runtime failures must not surface as
+        // GPU faults (exit 13).
+        assert_eq!(
+            load_error(Path::new("/m.bin"), "x".to_owned()).exit_code(),
+            15
+        );
+        assert_eq!(run_error("x".to_owned()).exit_code(), 1);
     }
 }

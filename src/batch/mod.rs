@@ -21,11 +21,19 @@ use crate::engine::{Backend, Engine, TranscribeOptions};
 use crate::error::ScrybeError;
 use crate::{audio, output};
 
+/// Fallback parallelism when the platform cannot report it.
+const DEFAULT_PARALLELISM: usize = 4;
+
+/// The machine's usable parallelism, or a sane default.
+pub fn detected_parallelism() -> usize {
+    std::thread::available_parallelism().map_or(DEFAULT_PARALLELISM, |n| n.get())
+}
+
 /// Resolve the concurrent-file count for the active backend. A single GPU
 /// command queue serializes inference, so more than two concurrent jobs only
 /// contend — clamp and say so. On CPU, default to half the cores.
 pub fn resolve_jobs(requested: Option<usize>, backend: Backend) -> (usize, Option<String>) {
-    let cores = std::thread::available_parallelism().map_or(4, |n| n.get());
+    let cores = detected_parallelism();
     match backend {
         Backend::Cpu => (requested.unwrap_or((cores / 2).max(1)).max(1), None),
         _ => {
@@ -137,13 +145,17 @@ pub fn run(engine: &Engine, files: &[PathBuf], cfg: &Config<'_>) -> Result<i32, 
                 || file.display().to_string(),
                 |n| n.to_string_lossy().into_owned(),
             );
-            let spinner = multi.add(ProgressBar::new_spinner());
-            spinner.enable_steady_tick(Duration::from_millis(120));
-            spinner.set_message(format!("transcribing {name}"));
+            let bar = multi.add(ProgressBar::new(100));
+            bar.set_style(
+                ProgressStyle::with_template("  {prefix:.dim} {bar:24} {percent:>3}% {msg}")
+                    .unwrap_or_else(|_| ProgressStyle::default_bar()),
+            );
+            bar.set_prefix(name.clone());
+            bar.enable_steady_tick(Duration::from_millis(120));
 
             let started = Instant::now();
-            let (duration, outcome) = transcribe_one(engine, &file, decoded, cfg);
-            spinner.finish_and_clear();
+            let (duration, outcome) = transcribe_one(engine, &file, decoded, cfg, &bar);
+            bar.finish_and_clear();
             aggregate.inc(1);
 
             results[index] = Some(FileResult {
@@ -159,14 +171,23 @@ pub fn run(engine: &Engine, files: &[PathBuf], cfg: &Config<'_>) -> Result<i32, 
     let interrupted = interrupted.load(Ordering::SeqCst);
     print_summary(&results, interrupted);
 
+    let processed = results.iter().flatten().count();
     let failed = results
         .iter()
         .flatten()
         .filter(|r| matches!(r.outcome, Outcome::Failed(_)))
         .count();
-    let total = results.iter().flatten().count();
     if failed > 0 {
-        Err(ScrybeError::PartialBatchFailure { failed, total })
+        Err(ScrybeError::PartialBatchFailure {
+            failed,
+            total: processed,
+        })
+    } else if interrupted && processed < files.len() {
+        // Ctrl-C stopped the run early; the exit code must reflect partial work.
+        Err(ScrybeError::PartialBatchFailure {
+            failed: files.len() - processed,
+            total: files.len(),
+        })
     } else {
         Ok(0)
     }
@@ -177,6 +198,7 @@ fn transcribe_one(
     file: &std::path::Path,
     decoded: DecodeMsg,
     cfg: &Config<'_>,
+    bar: &ProgressBar,
 ) -> (f64, Outcome) {
     let pcm = match decoded {
         DecodeMsg::Pcm(pcm) => pcm,
@@ -184,7 +206,19 @@ fn transcribe_one(
         DecodeMsg::Failed(e) => return (0.0, Outcome::Failed(e.to_string())),
     };
     let duration = pcm.duration_secs();
-    let transcript = match engine.transcribe(&pcm.samples, &cfg.options) {
+    // Drive the per-file bar from whisper's progress callback, with live ×RT.
+    let progress_bar = bar.clone();
+    let started = Instant::now();
+    let on_progress = move |percent: i32| {
+        let percent = percent.clamp(0, 100);
+        progress_bar.set_position(percent as u64);
+        let elapsed = started.elapsed().as_secs_f64();
+        if elapsed > 0.0 {
+            let done = f64::from(percent) / 100.0 * duration;
+            progress_bar.set_message(format!("{:.1}×RT", done / elapsed));
+        }
+    };
+    let transcript = match engine.transcribe(&pcm.samples, &cfg.options, on_progress) {
         Ok(t) => t,
         Err(e) => return (duration, Outcome::Failed(e.to_string())),
     };
