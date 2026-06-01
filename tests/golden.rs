@@ -219,6 +219,33 @@ fn uppercase_lang_is_normalized_not_silently_collapsed() {
     );
 }
 
+#[test]
+fn empty_pcm_surfaces_as_transcription_failed_exit_16() {
+    // The only exit code whose production path was asserted only synthetically.
+    // Empty PCM is the deterministic way to force a real `full()` fault: against the
+    // pinned whisper-rs it returns NoSamples → run_error → TranscriptionFailed (16),
+    // so a future change re-routing runtime faults to 13/15 would fail here.
+    let Some(model_path) = tiny_model_path() else {
+        eprintln!("skipping: tiny model not cached — run `scrybe models pull tiny`");
+        return;
+    };
+    let engine = Engine::load(&model_path, None).expect("load tiny model");
+    let options = TranscribeOptions {
+        language: Some("en".to_owned()),
+        translate: false,
+        threads: 4,
+    };
+    let exit = engine
+        .transcribe(&[], &options, |_| {})
+        .err()
+        .map(|e| e.exit_code());
+    assert_eq!(
+        exit,
+        Some(16),
+        "empty PCM must surface as TranscriptionFailed"
+    );
+}
+
 /// Word error rate: word-level edit distance over reference length, after
 /// lowercasing and stripping punctuation.
 fn word_error_rate(reference: &str, hypothesis: &str) -> f64 {
