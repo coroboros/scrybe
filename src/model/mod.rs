@@ -302,18 +302,35 @@ fn fetch_verified(
         .map_err(|e| dl_error(e.to_string()))?;
     let repo_api = api.model(repo.to_owned());
 
-    let path = repo_api.get(file).map_err(|e| dl_error(e.to_string()))?;
-    if sha256_matches(&path, sha256, label)? {
-        return Ok(path);
-    }
+    fetch_with_retry(
+        || repo_api.get(file).map_err(|e| dl_error(e.to_string())),
+        |path| sha256_matches(path, sha256, label),
+        evict,
+        || dl_error("checksum mismatch after re-download".to_owned()),
+    )
+}
 
-    // Corrupt download: drop the blob and fetch once more.
-    evict(&path);
-    let path = repo_api.get(file).map_err(|e| dl_error(e.to_string()))?;
-    if sha256_matches(&path, sha256, label)? {
+/// Fetch-verify with one re-download on checksum mismatch: fetch, verify; on
+/// mismatch evict the corrupt blob and fetch once more, verify; if it still
+/// mismatches, fail loud. Pure over the fetch/verify/evict effects so the retry
+/// ordering (evict before re-fetch, exactly one retry, terminal error) is
+/// unit-testable without touching the network.
+fn fetch_with_retry(
+    mut fetch: impl FnMut() -> Result<PathBuf, ScrybeError>,
+    verify: impl Fn(&std::path::Path) -> Result<bool, ScrybeError>,
+    mut evict: impl FnMut(&std::path::Path),
+    mismatch: impl FnOnce() -> ScrybeError,
+) -> Result<PathBuf, ScrybeError> {
+    let path = fetch()?;
+    if verify(&path)? {
         return Ok(path);
     }
-    Err(dl_error("checksum mismatch after re-download".to_owned()))
+    evict(&path);
+    let path = fetch()?;
+    if verify(&path)? {
+        return Ok(path);
+    }
+    Err(mismatch())
 }
 
 /// Remove a cached file: both the snapshot symlink and the blob it targets.
@@ -384,6 +401,57 @@ mod tests {
         assert!(would_exceed_memory(8 * GB, Model::LargeV3, 16));
         assert!(would_exceed_memory(4 * GB, Model::LargeV3, 1));
         assert!(!would_exceed_memory(8 * GB, Model::LargeV3Turbo, 1));
+    }
+
+    #[test]
+    fn fetch_with_retry_pins_the_redownload_state_machine() {
+        use std::cell::Cell;
+        let err = || ScrybeError::ModelDownloadFailed {
+            model: "t".to_owned(),
+            detail: "mismatch".to_owned(),
+        };
+
+        // Clean hit: one fetch, verify true, never evict.
+        let (fetches, evicts) = (Cell::new(0), Cell::new(0));
+        let r = fetch_with_retry(
+            || {
+                fetches.set(fetches.get() + 1);
+                Ok(PathBuf::from("/a"))
+            },
+            |_| Ok(true),
+            |_| evicts.set(evicts.get() + 1),
+            err,
+        );
+        assert!(r.is_ok());
+        assert_eq!((fetches.get(), evicts.get()), (1, 0));
+
+        // Mismatch then good: evict between, exactly two fetches, Ok.
+        let (fetches, evicts) = (Cell::new(0), Cell::new(0));
+        let r = fetch_with_retry(
+            || {
+                fetches.set(fetches.get() + 1);
+                Ok(PathBuf::from("/a"))
+            },
+            |_| Ok(fetches.get() == 2), // false on the first verify, true on the second
+            |_| evicts.set(evicts.get() + 1),
+            err,
+        );
+        assert!(r.is_ok());
+        assert_eq!((fetches.get(), evicts.get()), (2, 1));
+
+        // Mismatch twice: two fetches, one evict, terminal error.
+        let (fetches, evicts) = (Cell::new(0), Cell::new(0));
+        let r = fetch_with_retry(
+            || {
+                fetches.set(fetches.get() + 1);
+                Ok(PathBuf::from("/a"))
+            },
+            |_| Ok(false),
+            |_| evicts.set(evicts.get() + 1),
+            err,
+        );
+        assert!(matches!(r, Err(ScrybeError::ModelDownloadFailed { .. })));
+        assert_eq!((fetches.get(), evicts.get()), (2, 1));
     }
 
     #[test]
