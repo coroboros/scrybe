@@ -1,16 +1,11 @@
 //! scrybe entry point: parse the CLI, set up color, dispatch, and translate any
 //! failure into its stable exit code.
 
-mod audio;
-mod cli;
-mod color;
-mod error;
-mod model;
-
 use clap::{Parser, ValueEnum};
 
-use crate::cli::{Cli, Command, Model, ModelsAction, Task};
-use crate::error::ScrybeError;
+use scrybe::cli::{self, Cli, Command, Model, ModelsAction, Task};
+use scrybe::error::ScrybeError;
+use scrybe::{audio, color, engine, model};
 
 /// Exit code for argument/usage problems, matching clap's own convention.
 const USAGE_ERROR: i32 = 2;
@@ -86,34 +81,58 @@ fn transcribe(cli: &Cli) -> Result<i32, ScrybeError> {
         return Ok(0);
     }
 
-    // Fail-fast on the first decode error; batch resilience (continue + exit 20)
-    // arrives with the orchestrator.
+    let model_path = model::ensure_available(cli.model, cli.offline)?;
+    let engine = engine::Engine::load(&model_path)?;
+    anstream::eprintln!(
+        "{}",
+        color::paint(
+            color::DIM,
+            &format!("backend {} · model {}", engine::active_backend(), cli.model),
+        )
+    );
+
+    let options = engine::TranscribeOptions {
+        language: cli.lang.clone(),
+        translate: cli.task == Task::Translate,
+        threads: cli.threads.unwrap_or_else(default_threads),
+    };
+
+    // Fail-fast on the first error; batch resilience (continue + exit 20) arrives
+    // with the orchestrator.
     for file in &files {
         let pcm = audio::load_audio(file, cli.decoder)?;
+        let transcript = engine.transcribe(&pcm.samples, &options)?;
         anstream::println!(
-            "  {}  {}",
+            "  {} {}",
             file.display(),
             color::paint(
                 color::DIM,
                 &format!(
-                    "{:.1}s · {} Hz {} ch → 16 kHz mono ({} samples)",
+                    "[{}] {:.1}s · {} Hz {} ch",
+                    transcript.language,
                     pcm.duration_secs(),
                     pcm.source_sample_rate,
                     pcm.source_channels,
-                    pcm.samples.len()
-                )
-            )
+                ),
+            ),
         );
+        for segment in &transcript.segments {
+            anstream::println!(
+                "  {} {}",
+                color::paint(
+                    color::DIM,
+                    &format!("[{:>6.1} → {:>6.1}]", segment.start, segment.end),
+                ),
+                segment.text,
+            );
+        }
     }
-
-    anstream::eprintln!(
-        "{}",
-        color::paint(
-            color::WARN,
-            "transcription engine is not wired yet — decode + resample verified above."
-        )
-    );
     Ok(0)
+}
+
+/// Default decode threads: the machine's parallelism, or 4 when unknown.
+fn default_threads() -> usize {
+    std::thread::available_parallelism().map_or(4, |n| n.get())
 }
 
 /// Reject model + task/language combinations the model cannot serve, before any

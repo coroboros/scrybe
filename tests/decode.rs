@@ -1,57 +1,60 @@
 //! Decode-pipeline acceptance tests — the WS-2 contract.
 //!
-//! Exercised through the binary on committed fixtures (the audio modules are
-//! crate-internal): the canonical formats decode to 16 kHz mono, non-audio is
-//! skipped, HE-AAC fails loud with exit 10, and the ffmpeg fallback decodes it.
+//! Driven directly against the audio library (no model, no transcription): the
+//! canonical formats decode to 16 kHz mono, non-audio is skipped, HE-AAC fails
+//! loud with exit 10, AAC-LC decodes, and the ffmpeg fallback handles HE-AAC.
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
-use assert_cmd::Command;
-use predicates::prelude::*;
+use std::path::{Path, PathBuf};
 
-fn scrybe() -> Command {
-    let mut cmd = Command::cargo_bin("scrybe").unwrap();
-    cmd.env_remove("NO_COLOR")
-        .env_remove("CLICOLOR")
-        .env_remove("CLICOLOR_FORCE");
-    cmd
+use scrybe::audio::{self, AudioPcm};
+use scrybe::cli::Decoder;
+use scrybe::error::ScrybeError;
+
+fn decode(path: &str, decoder: Decoder) -> Result<AudioPcm, ScrybeError> {
+    audio::load_audio(Path::new(path), decoder)
 }
 
 #[test]
-fn folder_decodes_all_supported_and_skips_non_audio() {
-    scrybe()
-        .arg("tests/fixtures/audio")
-        .assert()
-        .success()
-        // Every canonical format is decoded to 16 kHz mono.
-        .stdout(predicate::str::contains("tone.wav"))
-        .stdout(predicate::str::contains("tone.mp3"))
-        .stdout(predicate::str::contains("tone.flac"))
-        .stdout(predicate::str::contains("tone.ogg"))
-        .stdout(predicate::str::contains("tone.m4a"))
-        // 44.1 kHz stereo source → 16 kHz mono.
-        .stdout(predicate::str::contains("44100 Hz 2 ch → 16 kHz mono"))
-        // The non-audio file is never handed to the decoder.
-        .stdout(predicate::str::contains("notes.txt").not());
+fn supported_formats_decode_to_16k_mono() {
+    for file in ["tone.wav", "tone.mp3", "tone.flac", "tone.ogg", "tone.m4a"] {
+        let pcm = decode(&format!("tests/fixtures/audio/{file}"), Decoder::Symphonia).expect(file);
+        // 44.1 kHz stereo source down to 16 kHz mono.
+        assert_eq!(pcm.source_sample_rate, 44_100, "{file} sample rate");
+        assert_eq!(pcm.source_channels, 2, "{file} channels");
+        assert!(!pcm.samples.is_empty(), "{file} produced no samples");
+        let secs = pcm.duration_secs();
+        assert!((0.45..=0.6).contains(&secs), "{file}: {secs}s");
+    }
+}
+
+#[test]
+fn discovery_skips_non_audio() {
+    let inputs = [PathBuf::from("tests/fixtures/audio")];
+    let found = audio::discover(&inputs, false);
+    assert!(
+        found
+            .iter()
+            .any(|p| p.extension().is_some_and(|e| e == "wav"))
+    );
+    assert!(
+        !found
+            .iter()
+            .any(|p| p.extension().is_some_and(|e| e == "txt"))
+    );
 }
 
 #[test]
 fn he_aac_fails_loud_with_exit_10() {
-    scrybe()
-        .arg("tests/fixtures/aac/he-aac.m4a")
-        .assert()
-        .failure()
-        .code(10)
-        .stderr(predicate::str::contains("HE-AAC"))
-        .stderr(predicate::str::contains("--decoder ffmpeg"));
+    let err = decode("tests/fixtures/aac/he-aac.m4a", Decoder::Symphonia).unwrap_err();
+    assert_eq!(err.exit_code(), 10);
+    assert!(err.to_string().contains("HE-AAC"), "got: {err}");
 }
 
 #[test]
 fn aac_lc_decodes_without_false_positive() {
-    scrybe()
-        .arg("tests/fixtures/aac/lc-aac.m4a")
-        .assert()
-        .success()
-        .stdout(predicate::str::contains("16 kHz mono"));
+    let pcm = decode("tests/fixtures/aac/lc-aac.m4a", Decoder::Symphonia).expect("lc-aac");
+    assert!(!pcm.samples.is_empty());
 }
 
 #[test]
@@ -60,11 +63,8 @@ fn ffmpeg_fallback_decodes_he_aac() {
         eprintln!("skipping: ffmpeg not on PATH");
         return;
     }
-    scrybe()
-        .args(["--decoder", "ffmpeg", "tests/fixtures/aac/he-aac.m4a"])
-        .assert()
-        .success()
-        .stdout(predicate::str::contains("16 kHz mono"));
+    let pcm = decode("tests/fixtures/aac/he-aac.m4a", Decoder::Ffmpeg).expect("ffmpeg he-aac");
+    assert!(!pcm.samples.is_empty());
 }
 
 fn which_ffmpeg() -> Option<()> {

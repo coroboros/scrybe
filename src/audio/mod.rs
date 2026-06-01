@@ -18,6 +18,7 @@ use crate::error::ScrybeError;
 pub const TARGET_SAMPLE_RATE: u32 = 16_000;
 
 /// 16 kHz mono f32 PCM plus provenance about the decoded source.
+#[derive(Debug)]
 pub struct AudioPcm {
     pub samples: Vec<f32>,
     pub source_sample_rate: u32,

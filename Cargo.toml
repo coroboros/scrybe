@@ -27,6 +27,16 @@ rubato = "3.0.0"
 sha2 = "0.11.0"
 symphonia = { version = "0.6.0", features = ["mp3", "aac", "alac", "isomp4", "ogg", "vorbis", "flac", "wav", "pcm"] }
 sysinfo = "0.39.3"
+whisper-rs = "0.16.0"
+
+[features]
+# CPU backend everywhere by default, so the crate builds with no GPU toolchain
+# (and CI needs none). GPU backends are opt-in; release builds add `metal` for
+# Apple Silicon, `cuda`/`vulkan` are build-from-source.
+default = []
+metal = ["whisper-rs/metal"]
+cuda = ["whisper-rs/cuda"]
+vulkan = ["whisper-rs/vulkan"]
 
 [dev-dependencies]
 assert_cmd = "2.2.2"

@@ -8,9 +8,11 @@ everywhere, no Python and no system `ffmpeg`.
 
 ## Status
 
-Early. The command surface, color layer, and error model are in place. The
-audio decode, model cache, transcription engine, and batch UX land in the next
-milestones — today's build resolves inputs and prints the plan.
+In progress. Audio decode, the model cache, and the whisper.cpp engine (VAD-free
+quality gating, language auto-detect, timestamped segments) work on the CPU
+backend. Parallel batch orchestration, output writers, and distribution are
+landing. Metal is a build feature (`--features metal`) for Apple Silicon; the
+default build is CPU so it compiles anywhere.
 
 ## Install
 
