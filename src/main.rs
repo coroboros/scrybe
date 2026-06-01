@@ -76,7 +76,7 @@ fn transcribe(cli: &Cli) -> Result<i32, ScrybeError> {
 
     let files = audio::discover(&cli.paths, cli.recursive);
     let formats = cli.effective_formats();
-    print_plan(cli, model, &formats);
+    print_plan(cli, model, backend, &formats);
 
     if files.is_empty() {
         anstream::eprintln!(
@@ -248,7 +248,7 @@ fn list_models() {
 
 /// Print the fully-resolved invocation. Reports every flag so the plan is the
 /// single source of truth for what a run would do.
-fn print_plan(cli: &Cli, model: Model, formats: &[cli::Format]) {
+fn print_plan(cli: &Cli, model: Model, backend: engine::Backend, formats: &[cli::Format]) {
     let optional =
         |value: &Option<usize>| value.map_or_else(|| "auto".to_owned(), |n| n.to_string());
     let lang = cli.lang.as_deref().unwrap_or("auto");
@@ -262,8 +262,11 @@ fn print_plan(cli: &Cli, model: Model, formats: &[cli::Format]) {
         .as_ref()
         .map_or_else(|| "sidecar".to_owned(), |dir| dir.display().to_string());
 
+    // Backend is in the plan so it's reported on every path, including the
+    // single-file `--json` stream that returns before the batch banner.
     let config = format!(
-        "model={} task={} lang={} format={} jobs={} threads={} out-dir={} decoder={} recursive={} force={} json={} offline={} dry-run={}",
+        "backend={} model={} task={} lang={} format={} jobs={} threads={} out-dir={} decoder={} recursive={} force={} json={} offline={} dry-run={}",
+        backend,
         model,
         cli.task,
         lang,

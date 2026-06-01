@@ -383,7 +383,7 @@ fn sha256_matches(
 
 /// Human-readable byte size (binary units).
 pub fn human_size(bytes: u64) -> String {
-    const UNITS: &[&str] = &["B", "KB", "MB", "GB"];
+    const UNITS: &[&str] = &["B", "KB", "MB", "GB", "TB", "PB"];
     let mut value = bytes as f64;
     let mut unit = 0;
     while value >= 1024.0 && unit < UNITS.len() - 1 {

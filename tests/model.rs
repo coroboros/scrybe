@@ -29,6 +29,20 @@ fn memory_guard_refuses_oversized_run() {
 }
 
 #[test]
+fn zero_config_oversized_jobs_refused_with_hint() {
+    // No --model (auto-resolve) + an absurd job count drives the resolve_model →
+    // guard_memory wiring on the zero-config path and pins the actionable OOM hint
+    // reaching stderr. Host-independent: 1200 jobs is ~1.2 TiB of decode buffers, so
+    // even the smallest model can't fit and the "no model fits" branch fires.
+    scrybe()
+        .args(["--jobs", "1200", WAV])
+        .assert()
+        .failure()
+        .code(12)
+        .stderr(predicate::str::contains("no model fits at 1200"));
+}
+
+#[test]
 fn turbo_cannot_translate() {
     scrybe()
         .args(["--model", "large-v3-turbo", "--task", "translate", WAV])
