@@ -138,7 +138,15 @@ pub fn decode_file(path: &Path) -> Result<Decoded, ScrybeError> {
                         .to_owned(),
                 ));
             }
-            Err(SymphoniaError::IoError(_)) => break,
+            // End of stream is signalled as an unexpected-EOF I/O error; treat only
+            // that as the end. Any other I/O error is a genuine read failure — fail
+            // loud rather than silently truncate the transcript.
+            Err(SymphoniaError::IoError(e)) if e.kind() == std::io::ErrorKind::UnexpectedEof => {
+                break;
+            }
+            Err(SymphoniaError::IoError(e)) => {
+                return Err(unsupported(format!("read error: {e}")));
+            }
             Err(e) => return Err(unsupported(format!("read error: {e}"))),
         }
     }

@@ -404,6 +404,19 @@ mod tests {
     }
 
     #[test]
+    fn total_memory_reads_a_sane_value() {
+        // The one production RAM probe; it drives model and jobs selection. A sysinfo
+        // bump that changes units/refresh semantics (KiB vs bytes, or yields 0) must
+        // fail loudly here, not silently degrade auto-selection. Conservative floor so
+        // it never flakes on a small CI runner.
+        let total = total_memory().expect("a real test host reports total RAM");
+        assert!(
+            total >= 256 * 1024 * 1024,
+            "implausibly low total RAM: {total}"
+        );
+    }
+
+    #[test]
     fn fetch_with_retry_pins_the_redownload_state_machine() {
         use std::cell::Cell;
         let err = || ScrybeError::ModelDownloadFailed {
