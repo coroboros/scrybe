@@ -287,37 +287,48 @@ pub fn decode_via_ffmpeg(path: &Path) -> Result<Decoded, ScrybeError> {
         let decoded = read_f32le_stream(&mut stdout, MAX_SOURCE_SAMPLES);
         (decoded, reader.join().unwrap_or_default())
     });
-    let samples = match decoded {
-        Ok(samples) => samples,
-        Err(StreamError::Overflow) => {
+    // On a stream error we already have all we need — kill the child; otherwise wait
+    // for its exit status. Result classification is a pure, unit-tested helper.
+    let success = match &decoded {
+        Err(_) => {
             let _ = child.kill();
             let _ = child.wait();
-            return Err(unsupported(
-                "audio is too large to decode in memory; use a shorter clip or `--jobs 1`"
-                    .to_owned(),
-            ));
+            false
         }
-        Err(StreamError::Io(e)) => {
-            let _ = child.kill();
-            let _ = child.wait();
-            return Err(unsupported(format!("reading ffmpeg output failed: {e}")));
-        }
+        Ok(_) => child
+            .wait()
+            .map_err(|e| unsupported(format!("waiting for ffmpeg failed: {e}")))?
+            .success(),
     };
-
-    let status = child
-        .wait()
-        .map_err(|e| unsupported(format!("waiting for ffmpeg failed: {e}")))?;
-    if !status.success() {
-        return Err(unsupported(format!("ffmpeg failed: {}", errs.trim())));
-    }
-    if samples.is_empty() {
-        return Err(unsupported("ffmpeg produced no audio".to_owned()));
-    }
+    let samples = ffmpeg_outcome(path, decoded, success, &errs)?;
     Ok(Decoded {
         samples,
         sample_rate: TARGET_SAMPLE_RATE,
         channels: 1,
     })
+}
+
+/// Classify a finished ffmpeg decode into samples or a coded error. Pure (no process
+/// I/O — teardown stays in `decode_via_ffmpeg`), so the overflow / read-error /
+/// non-zero-exit / empty-output arms are unit-testable without spawning ffmpeg.
+fn ffmpeg_outcome(
+    path: &Path,
+    decoded: Result<Vec<f32>, StreamError>,
+    success: bool,
+    stderr: &str,
+) -> Result<Vec<f32>, ScrybeError> {
+    let unsupported = |detail: String| ScrybeError::unsupported_codec(path, detail);
+    match decoded {
+        Err(StreamError::Overflow) => Err(unsupported(
+            "audio is too large to decode in memory; use a shorter clip or `--jobs 1`".to_owned(),
+        )),
+        Err(StreamError::Io(e)) => Err(unsupported(format!("reading ffmpeg output failed: {e}"))),
+        Ok(_) if !success => Err(unsupported(format!("ffmpeg failed: {}", stderr.trim()))),
+        Ok(samples) if samples.is_empty() => {
+            Err(unsupported("ffmpeg produced no audio".to_owned()))
+        }
+        Ok(samples) => Ok(samples),
+    }
 }
 
 /// Big-endian bit reader over the AudioSpecificConfig byte stream.
@@ -487,6 +498,42 @@ mod tests {
             read_f32le_stream(reader, 2),
             Err(StreamError::Overflow)
         ));
+    }
+
+    #[test]
+    fn ffmpeg_outcome_classifies_every_arm() {
+        let p = Path::new("/x.m4a");
+        // Overflow → too-large, exit 10.
+        let e = ffmpeg_outcome(p, Err(StreamError::Overflow), true, "").unwrap_err();
+        assert_eq!(e.exit_code(), 10);
+        assert!(e.to_string().contains("too large"), "{e}");
+        // Read error → read-failure message.
+        let e = ffmpeg_outcome(
+            p,
+            Err(StreamError::Io(std::io::Error::other("boom"))),
+            true,
+            "",
+        )
+        .unwrap_err();
+        assert!(
+            e.to_string().contains("reading ffmpeg output failed"),
+            "{e}"
+        );
+        // Non-zero exit → "ffmpeg failed" carrying the captured stderr.
+        let e = ffmpeg_outcome(p, Ok(vec![1.0]), false, "bad codec").unwrap_err();
+        let msg = e.to_string();
+        assert!(
+            msg.contains("ffmpeg failed") && msg.contains("bad codec"),
+            "{msg}"
+        );
+        // Success but empty → no audio.
+        let e = ffmpeg_outcome(p, Ok(vec![]), true, "").unwrap_err();
+        assert!(e.to_string().contains("no audio"), "{e}");
+        // Success with samples → passthrough.
+        assert_eq!(
+            ffmpeg_outcome(p, Ok(vec![0.5, -0.5]), true, "").unwrap(),
+            vec![0.5, -0.5]
+        );
     }
 
     #[test]
