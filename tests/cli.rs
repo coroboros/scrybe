@@ -596,7 +596,7 @@ fn vtt_and_tsv_formats_write_well_formed_sidecars() {
     // clap → effective_formats → write_outputs and check the files parse.
     let out = tempfile::tempdir().unwrap();
     scrybe()
-        .args(["--model", "tiny", "--format", "vtt,tsv", "--out-dir"])
+        .args(["--model", "tiny", "--format", "vtt,tsv,csv", "--out-dir"])
         .arg(out.path())
         .arg("tests/fixtures/speech/en.wav")
         .assert()
@@ -614,6 +614,15 @@ fn vtt_and_tsv_formats_write_well_formed_sidecars() {
             .nth(1)
             .is_some_and(|row| row.matches('\t').count() == 2),
         "tsv has no tab-separated data row:\n{tsv}"
+    );
+    let csv = std::fs::read_to_string(out.path().join("en.csv")).expect("en.csv written");
+    assert!(
+        csv.starts_with("start,end,text\n"),
+        "csv header missing:\n{csv}"
+    );
+    assert!(
+        csv.lines().nth(1).is_some_and(|row| row.contains('"')),
+        "csv has no quoted data row:\n{csv}"
     );
 }
 

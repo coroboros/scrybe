@@ -157,6 +157,7 @@ pub enum Format {
     Vtt,
     Json,
     Tsv,
+    Csv,
 }
 
 /// Audio decoder backend.

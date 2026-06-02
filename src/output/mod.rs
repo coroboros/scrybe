@@ -29,6 +29,7 @@ pub fn render(transcript: &Transcript, format: Format, meta: &Meta<'_>) -> Strin
         Format::Vtt => render_vtt(transcript),
         Format::Json => render_json(transcript, meta),
         Format::Tsv => render_tsv(transcript),
+        Format::Csv => render_csv(transcript),
     }
 }
 
@@ -180,6 +181,26 @@ fn render_tsv(transcript: &Transcript) -> String {
         );
     }
     out
+}
+
+fn render_csv(transcript: &Transcript) -> String {
+    let mut out = String::from("start,end,text\n");
+    for segment in sanitized(&transcript.segments) {
+        let _ = writeln!(
+            out,
+            "{},{},{}",
+            (segment.start * 1000.0).round() as i64,
+            (segment.end * 1000.0).round() as i64,
+            csv_field(segment.text),
+        );
+    }
+    out
+}
+
+/// Quote a CSV text field per RFC 4180: wrap in double quotes and double any inner
+/// quote, so a comma, quote, or newline in the transcript cannot break the columns.
+fn csv_field(text: &str) -> String {
+    format!("\"{}\"", text.replace('"', "\"\""))
 }
 
 fn render_json(transcript: &Transcript, meta: &Meta<'_>) -> String {
@@ -458,6 +479,15 @@ mod tests {
         assert!(tsv.starts_with("start\tend\ttext\n"));
         assert!(tsv.contains("0\t1500\tHello world"));
         assert!(tsv.contains("1500\t3000\tsecond line"));
+    }
+
+    #[test]
+    fn csv_has_header_and_quotes_fields() {
+        let csv = render_csv(&transcript());
+        assert!(csv.starts_with("start,end,text\n"));
+        assert!(csv.contains("0,1500,\"Hello world\""));
+        // A comma or quote in the text must not break the columns.
+        assert_eq!(csv_field("a, \"b\""), "\"a, \"\"b\"\"\"");
     }
 
     #[test]
