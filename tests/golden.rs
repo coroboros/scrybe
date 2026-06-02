@@ -36,6 +36,7 @@ fn english_clip_within_wer_tolerance() {
         language: Some("en".to_owned()),
         translate: false,
         threads: 4,
+        word_timestamps: false,
     };
     let transcript = engine
         .transcribe(&pcm.samples, &options, |_| {})
@@ -81,6 +82,7 @@ fn vad_floor_transcribes_through_the_engine() {
         language: Some("en".to_owned()),
         translate: false,
         threads: 4,
+        word_timestamps: false,
     };
     let transcript = engine
         .transcribe(&pcm.samples, &options, |_| {})
@@ -119,6 +121,7 @@ fn translate_task_changes_output_through_the_engine() {
             language: Some("fr".to_owned()),
             translate,
             threads: 4,
+            word_timestamps: false,
         };
         engine
             .transcribe(&pcm.samples, &options, |_| {})
@@ -159,6 +162,7 @@ fn auto_detects_and_reports_french() {
         language: None,
         translate: false,
         threads: 4,
+        word_timestamps: false,
     };
     let transcript = engine
         .transcribe(&pcm.samples, &options, |_| {})
@@ -195,6 +199,7 @@ fn uppercase_lang_is_normalized_not_silently_collapsed() {
                 language: Some("EN".to_owned()),
                 translate: false,
                 threads: 4,
+                word_timestamps: false,
             },
             |_| {},
         )
@@ -253,6 +258,7 @@ fn long_trailing_silence_does_not_hallucinate_or_loop() {
                 language: Some("en".to_owned()),
                 translate: false,
                 threads: 4,
+                word_timestamps: false,
             },
             |_| {},
         )
@@ -295,6 +301,7 @@ fn empty_pcm_surfaces_as_transcription_failed_exit_16() {
         language: Some("en".to_owned()),
         translate: false,
         threads: 4,
+        word_timestamps: false,
     };
     let exit = engine
         .transcribe(&[], &options, |_| {})
@@ -304,6 +311,50 @@ fn empty_pcm_surfaces_as_transcription_failed_exit_16() {
         exit,
         Some(16),
         "empty PCM must surface as TranscriptionFailed"
+    );
+}
+
+#[test]
+fn word_timestamps_populate_aligned_words() {
+    // The only end-to-end coverage of the token→word grouping. With word_timestamps
+    // on, segments carry per-word timing; each word is well-formed (end >= start) with
+    // non-empty text, and the joined words recover the anchor content. word_timestamps
+    // off (asserted by the other tests via empty `words`) keeps the cost off non-JSON.
+    let Some(model_path) = require_model_or_skip() else {
+        return;
+    };
+    let engine = Engine::load(&model_path, None).expect("load tiny model");
+    let pcm = audio::load_audio(
+        Path::new("tests/fixtures/speech/en.wav"),
+        Decoder::Symphonia,
+    )
+    .expect("decode en.wav");
+    let transcript = engine
+        .transcribe(
+            &pcm.samples,
+            &TranscribeOptions {
+                language: Some("en".to_owned()),
+                translate: false,
+                threads: 4,
+                word_timestamps: true,
+            },
+            |_| {},
+        )
+        .expect("transcribe");
+    let words: Vec<_> = transcript.segments.iter().flat_map(|s| &s.words).collect();
+    assert!(!words.is_empty(), "word timestamps must populate words");
+    for word in &words {
+        assert!(word.end >= word.start, "word end before start: {word:?}");
+        assert!(!word.text.trim().is_empty(), "word text must be non-empty");
+    }
+    let joined = words
+        .iter()
+        .map(|w| w.text.to_lowercase())
+        .collect::<Vec<_>>()
+        .join(" ");
+    assert!(
+        joined.contains("fox") || joined.contains("dog"),
+        "words lost the anchor content: {joined:?}"
     );
 }
 

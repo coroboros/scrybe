@@ -9,7 +9,7 @@ use std::path::{Path, PathBuf};
 use serde::Serialize;
 
 use crate::cli::Format;
-use crate::engine::{Segment, Transcript};
+use crate::engine::{Segment, Transcript, Word};
 use crate::error::ScrybeError;
 
 /// Bumped when the JSON schema changes incompatibly.
@@ -196,6 +196,16 @@ fn render_json(transcript: &Transcript, meta: &Meta<'_>) -> String {
         start: f64,
         end: f64,
         text: &'a str,
+        // Optional, additive — present only with word timestamps (JSON output), so
+        // existing consumers and `schema_version` are unaffected when absent.
+        #[serde(skip_serializing_if = "Vec::is_empty")]
+        words: Vec<WordOut<'a>>,
+    }
+    #[derive(Serialize)]
+    struct WordOut<'a> {
+        start: f64,
+        end: f64,
+        text: &'a str,
     }
 
     let doc = Doc {
@@ -209,6 +219,15 @@ fn render_json(transcript: &Transcript, meta: &Meta<'_>) -> String {
                 start: s.start,
                 end: s.end,
                 text: s.text,
+                words: s
+                    .words
+                    .iter()
+                    .map(|w| WordOut {
+                        start: w.start,
+                        end: w.end,
+                        text: &w.text,
+                    })
+                    .collect(),
             })
             .collect(),
     };
@@ -216,15 +235,17 @@ fn render_json(transcript: &Transcript, meta: &Meta<'_>) -> String {
     serde_json::to_string_pretty(&doc).unwrap_or_else(|_| "{}".to_owned())
 }
 
-/// A timestamp-sanitized view of a segment: borrows the text, owns the times.
+/// A timestamp-sanitized view of a segment: borrows the text and words, owns the times.
 struct Timed<'a> {
     start: f64,
     end: f64,
     text: &'a str,
+    words: &'a [Word],
 }
 
 /// Clamp timestamps non-negative, keep `end >= start`, and push each start to at
-/// least the previous end so subtitle cues never overlap.
+/// least the previous end so subtitle cues never overlap. Per-word timing is carried
+/// through untouched (only JSON reads it; the subtitle/text writers ignore it).
 fn sanitized(segments: &[Segment]) -> Vec<Timed<'_>> {
     let mut out = Vec::with_capacity(segments.len());
     let mut prev_end = 0.0_f64;
@@ -236,6 +257,7 @@ fn sanitized(segments: &[Segment]) -> Vec<Timed<'_>> {
             start,
             end,
             text: &segment.text,
+            words: &segment.words,
         });
     }
     out
@@ -265,11 +287,24 @@ mod tests {
                     start: 0.0,
                     end: 1.5,
                     text: "Hello world".to_owned(),
+                    words: vec![
+                        Word {
+                            start: 0.0,
+                            end: 0.7,
+                            text: "Hello".to_owned(),
+                        },
+                        Word {
+                            start: 0.7,
+                            end: 1.5,
+                            text: "world".to_owned(),
+                        },
+                    ],
                 },
                 Segment {
                     start: 1.5,
                     end: 3.0,
                     text: "second line".to_owned(),
+                    words: vec![],
                 },
             ],
         }
@@ -291,11 +326,13 @@ mod tests {
                     start: -1.0,
                     end: 2.0,
                     text: "a".to_owned(),
+                    words: vec![],
                 },
                 Segment {
                     start: 1.0,
                     end: 0.5,
                     text: "b".to_owned(),
+                    words: vec![],
                 },
             ],
         };
@@ -316,11 +353,13 @@ mod tests {
                 start: -1.0,
                 end: 2.0,
                 text: "a".to_owned(),
+                words: vec![],
             },
             Segment {
                 start: 1.0,
                 end: 0.5,
                 text: "b".to_owned(),
+                words: vec![],
             },
         ];
         let timed = sanitized(&messy);
@@ -351,6 +390,19 @@ mod tests {
         assert_eq!(seg["start"], 0.0);
         assert_eq!(seg["end"], 1.5);
         assert_eq!(seg["text"], "Hello world");
+        // Word-level timing is emitted when present, as an additive array...
+        let words = seg["words"]
+            .as_array()
+            .expect("first segment carries words");
+        assert_eq!(words.len(), 2);
+        assert_eq!(words[0]["text"], "Hello");
+        assert_eq!(words[0]["start"], 0.0);
+        assert_eq!(words[0]["end"], 0.7);
+        // ...and omitted entirely when a segment has none, so the schema stays stable.
+        assert!(
+            value["segments"][1].get("words").is_none(),
+            "a word-less segment must not emit an empty words array"
+        );
     }
 
     #[test]

@@ -118,6 +118,8 @@ fn transcribe(cli: &Cli) -> Result<i32, ScrybeError> {
         language: cli.lang.clone(),
         translate: cli.task == Task::Translate,
         threads,
+        // Per-word timing only earns its compute when JSON carries it.
+        word_timestamps: formats.contains(&cli::Format::Json),
     };
     let model_name = model.to_string();
 
