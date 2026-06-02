@@ -1,14 +1,16 @@
-//! Decode audio files to interleaved f32 PCM.
+//! Decode audio files to 16 kHz mono f32 PCM.
 //!
-//! The default path is pure-Rust symphonia. HE-AAC/SBR is detected up front and
-//! rejected with an actionable message (symphonia is AAC-LC only). The optional
-//! ffmpeg path shells out for codecs symphonia cannot handle.
+//! The default path is pure-Rust symphonia, streaming each decoded packet through a
+//! downmix and the [`Resampler16k`] as it arrives, so the full-resolution source is
+//! never resident — only the bounded 16 kHz output. HE-AAC/SBR is detected up front
+//! and rejected with an actionable message (symphonia is AAC-LC only). The optional
+//! ffmpeg path shells out for codecs symphonia cannot handle, and already emits
+//! 16 kHz mono directly.
 
 use std::io::Read as _;
 use std::path::Path;
 use std::process::{Command, Stdio};
 
-use symphonia::core::audio::GenericAudioBufferRef;
 use symphonia::core::codecs::audio::AudioDecoderOptions;
 use symphonia::core::errors::Error as SymphoniaError;
 use symphonia::core::formats::probe::Hint;
@@ -16,37 +18,41 @@ use symphonia::core::formats::{FormatOptions, TrackType};
 use symphonia::core::io::MediaSourceStream;
 use symphonia::core::meta::MetadataOptions;
 
-use super::TARGET_SAMPLE_RATE;
+use super::resample::{ResampleError, Resampler16k};
+use super::{AudioPcm, TARGET_SAMPLE_RATE, downmix_into};
 use crate::error::ScrybeError;
-
-/// Bytes per decoded f32 sample.
-const SAMPLE_BYTES: u64 = 4;
-
-/// Ceiling on one source's raw decoded PCM, before the resample frees it. Derived
-/// from the per-job decode reservation (`model::DECODE_BUFFER`) so the two cannot
-/// desync: with the batch pool running at most `jobs` decodes at once, each capped
-/// here, the aggregate stays within what `guard_memory` reserved. Beyond it we fail
-/// loud; very large sources should use `--decoder ffmpeg` (streams to 16 kHz mono).
-const MAX_SOURCE_PCM_BYTES: u64 = crate::model::DECODE_BUFFER;
-
-/// The ceiling expressed in f32 samples, for the in-loop/streaming sample counts.
-const MAX_SOURCE_SAMPLES: usize = (MAX_SOURCE_PCM_BYTES / SAMPLE_BYTES) as usize;
 
 /// Initial f32 capacity for the streamed ffmpeg decode — ~4 MB. Amortizes the early
 /// reallocs on a long decode without a large speculative allocation; the in-loop
 /// ceiling still bounds real growth, and a smaller `max_samples` caps it below this.
 const STREAM_PRESIZE_SAMPLES: usize = 1024 * 1024;
 
-/// Interleaved f32 PCM plus the source stream's rate and channel count.
+/// 16 kHz mono f32 PCM (from the ffmpeg path), plus the source stream's rate and
+/// channel count for provenance.
 pub struct Decoded {
     pub samples: Vec<f32>,
     pub sample_rate: u32,
     pub channels: u16,
 }
 
-/// Decode with symphonia. Fails loud (no silent/garbled output) on unsupported
-/// codecs, including HE-AAC, pointing the user at the ffmpeg escape.
-pub fn decode_file(path: &Path) -> Result<Decoded, ScrybeError> {
+/// Map a streaming-resample failure to a coded, actionable decode error.
+fn resample_error(path: &Path, error: ResampleError) -> ScrybeError {
+    match error {
+        ResampleError::Overflow => ScrybeError::unsupported_codec(
+            path,
+            "audio is too long to decode in memory (~4.6 h of 16 kHz mono); use a shorter clip or `--decoder ffmpeg`",
+        ),
+        ResampleError::Failed(detail) => {
+            ScrybeError::unsupported_codec(path, format!("resampling to 16 kHz failed: {detail}"))
+        }
+    }
+}
+
+/// Decode with symphonia, streaming to 16 kHz mono. Fails loud (no silent/garbled
+/// output) on unsupported codecs, including HE-AAC, pointing the user at the ffmpeg
+/// escape. Each packet is downmixed and resampled as it decodes, so memory tracks the
+/// 16 kHz output, not the source — a long, high-rate file no longer hits a source cap.
+pub fn decode_file(path: &Path) -> Result<AudioPcm, ScrybeError> {
     let unsupported = |detail: String| ScrybeError::unsupported_codec(path, detail);
 
     let file = std::fs::File::open(path).map_err(|e| unsupported(e.to_string()))?;
@@ -70,7 +76,6 @@ pub fn decode_file(path: &Path) -> Result<Decoded, ScrybeError> {
         .default_track(TrackType::Audio)
         .ok_or_else(|| unsupported("no audio track found".to_owned()))?;
     let track_id = track.id;
-    let source_frames = track.num_frames;
 
     let audio_params = track
         .codec_params
@@ -87,17 +92,6 @@ pub fn decode_file(path: &Path) -> Result<Decoded, ScrybeError> {
         .map_or(1, |ch| ch.count() as u16)
         .max(1);
 
-    // Reject sources whose raw PCM would exhaust memory before the resample frees
-    // it (the memory guard models the post-resample buffer, not this transient).
-    if let Some(frames) = source_frames
-        && exceeds_decode_ceiling(frames, channels)
-    {
-        return Err(unsupported(format!(
-            "audio is too large to decode in memory (~{} raw); use `--jobs 1`, a shorter clip, or `--decoder ffmpeg`",
-            crate::model::human_size(raw_pcm_bytes(frames, channels)),
-        )));
-    }
-
     if let Some(extra) = audio_params.extra_data.as_deref()
         && is_he_aac_asc(extra)
     {
@@ -110,10 +104,10 @@ pub fn decode_file(path: &Path) -> Result<Decoded, ScrybeError> {
         .make_audio_decoder(audio_params, &AudioDecoderOptions::default())
         .map_err(|e| unsupported(format!("no decoder for this codec: {e}")))?;
 
-    // Pre-size from the (guard-bounded) frame count to avoid ~log2(N) reallocs on
-    // long files; the loop also caps growth for sources that don't declare length.
-    let mut samples = Vec::with_capacity(presize_capacity(source_frames, channels));
-    let mut chunk: Vec<f32> = Vec::new();
+    let mut resampler = Resampler16k::new(sample_rate).map_err(|e| resample_error(path, e))?;
+    let mut interleaved: Vec<f32> = Vec::new(); // reused per packet
+    let mut mono: Vec<f32> = Vec::new(); // reused per packet
+    let mut decoded_any = false;
     loop {
         match format.next_packet() {
             Ok(Some(packet)) => {
@@ -122,12 +116,13 @@ pub fn decode_file(path: &Path) -> Result<Decoded, ScrybeError> {
                 }
                 match decoder.decode(&packet) {
                     Ok(decoded) => {
-                        append_f32(&decoded, &mut chunk, &mut samples);
-                        if samples.len() > MAX_SOURCE_SAMPLES {
-                            return Err(unsupported(
-                                "audio exceeds the in-memory decode limit; use `--jobs 1`, a shorter clip, or `--decoder ffmpeg`".to_owned(),
-                            ));
+                        decoded.copy_to_vec_interleaved(&mut interleaved);
+                        if interleaved.is_empty() {
+                            continue;
                         }
+                        decoded_any = true;
+                        downmix_into(&interleaved, channels, &mut mono);
+                        resampler.push(&mono).map_err(|e| resample_error(path, e))?;
                     }
                     Err(SymphoniaError::DecodeError(_) | SymphoniaError::IoError(_)) => continue,
                     Err(e) => return Err(unsupported(format!("decode error: {e}"))),
@@ -156,13 +151,17 @@ pub fn decode_file(path: &Path) -> Result<Decoded, ScrybeError> {
         }
     }
 
+    if !decoded_any {
+        return Err(unsupported("file contained no decodable audio".to_owned()));
+    }
+    let samples = resampler.finish().map_err(|e| resample_error(path, e))?;
     if samples.is_empty() {
         return Err(unsupported("file contained no decodable audio".to_owned()));
     }
-    Ok(Decoded {
+    Ok(AudioPcm {
         samples,
-        sample_rate,
-        channels,
+        source_sample_rate: sample_rate,
+        source_channels: channels,
     })
 }
 
@@ -206,48 +205,11 @@ fn read_f32le_stream<R: std::io::Read>(
     Ok(samples)
 }
 
-/// Raw interleaved f32 PCM bytes a source of `frames` × `channels` would decode to.
-fn raw_pcm_bytes(frames: u64, channels: u16) -> u64 {
-    frames
-        .saturating_mul(u64::from(channels))
-        .saturating_mul(SAMPLE_BYTES)
-}
-
-/// Whether a source's raw PCM would exceed the in-memory decode ceiling. Derived
-/// from `MAX_SOURCE_PCM_BYTES` so the security-relevant fail-loud branch is
-/// testable and cannot silently desync from the budget.
-fn exceeds_decode_ceiling(frames: u64, channels: u16) -> bool {
-    raw_pcm_bytes(frames, channels) > MAX_SOURCE_PCM_BYTES
-}
-
-/// Initial capacity for the decode buffer. Pre-sizes to the declared frame count
-/// to avoid realloc storms on long files, but caps the speculative allocation so
-/// a crafted container header (huge declared length from a tiny file) can't force
-/// a multi-GB up-front alloc — the in-loop ceiling still bounds growth from the
-/// bytes actually decoded.
-fn presize_capacity(source_frames: Option<u64>, channels: u16) -> usize {
-    /// ~64 MB of f32 — enough to pre-size ~17 min of 16 kHz mono before growth.
-    const PRESIZE_CAP_SAMPLES: usize = 16 * 1024 * 1024;
-    match source_frames {
-        Some(frames) => (frames as usize)
-            .saturating_mul(channels as usize)
-            .min(PRESIZE_CAP_SAMPLES),
-        None => 0,
-    }
-}
-
-/// Append one decoded packet's interleaved samples to `out`. `chunk` is reused
-/// scratch — `copy_to_vec_interleaved` overwrites it in full each call — so the
-/// per-packet allocation is amortized across the file.
-fn append_f32(decoded: &GenericAudioBufferRef<'_>, chunk: &mut Vec<f32>, out: &mut Vec<f32>) {
-    decoded.copy_to_vec_interleaved(chunk);
-    out.extend_from_slice(chunk);
-}
-
 /// Decode by shelling out to a system `ffmpeg`, producing 16 kHz mono f32 PCM
-/// directly. The escape hatch for codecs symphonia cannot handle (e.g. HE-AAC).
+/// directly. The escape hatch for codecs symphonia cannot handle (e.g. HE-AAC). Caps
+/// the output at the same 16 kHz-mono ceiling as the symphonia path.
 pub fn decode_via_ffmpeg(path: &Path) -> Result<Decoded, ScrybeError> {
-    decode_via_ffmpeg_capped(path, MAX_SOURCE_SAMPLES)
+    decode_via_ffmpeg_capped(path, super::resample::MAX_OUTPUT_SAMPLES)
 }
 
 /// `decode_via_ffmpeg` with an injectable sample ceiling, so the overflow teardown
@@ -600,30 +562,6 @@ mod tests {
             chunk: 4,
         };
         assert!(read_f32le_stream(reader, 16).unwrap().is_empty());
-    }
-
-    #[test]
-    fn decode_ceiling_rejects_oversized_sources() {
-        // Just over the ceiling (in frames) is rejected; a normal clip passes.
-        let frames_at_ceiling = MAX_SOURCE_PCM_BYTES / SAMPLE_BYTES; // mono
-        assert!(!exceeds_decode_ceiling(frames_at_ceiling, 1));
-        assert!(exceeds_decode_ceiling(frames_at_ceiling + 1, 1));
-        // Channels multiply the raw size: half the frames in stereo still exceeds.
-        assert!(exceeds_decode_ceiling(frames_at_ceiling / 2 + 1, 2));
-        // A crafted huge frame count saturates rather than wrapping → rejected.
-        assert!(exceeds_decode_ceiling(u64::MAX, 8));
-        // A short clip is fine.
-        assert!(!exceeds_decode_ceiling(16_000 * 60, 1)); // 1 min mono
-    }
-
-    #[test]
-    fn presize_capacity_caps_crafted_headers() {
-        // A small declared length pre-sizes exactly (2 ch interleaved).
-        assert_eq!(presize_capacity(Some(1000), 2), 2000);
-        // A crafted huge declared length is capped, not trusted up front.
-        assert_eq!(presize_capacity(Some(u64::MAX), 2), 16 * 1024 * 1024);
-        // No declared length → no speculative allocation.
-        assert_eq!(presize_capacity(None, 1), 0);
     }
 
     #[test]

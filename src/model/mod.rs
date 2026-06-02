@@ -91,16 +91,13 @@ pub fn info(model: Model) -> ModelInfo {
 
 /// Per-job decode-memory budget, and the single source of truth for the decode
 /// ceiling: it is BOTH the amount `guard_memory` reserves per job AND the hard
-/// per-file raw-PCM ceiling the decoder enforces (the decode path derives its
-/// ceiling from this value, so the two cannot desync). The batch pool runs at most
-/// `jobs` decodes at once, each holding a raw buffer bounded by this ceiling, so
-/// resident decode memory tracks `DECODE_BUFFER * jobs`. During the resample the
-/// raw input and the resampled output are briefly both resident (up to ~2× this
-/// budget when upsampling), but each is independently capped — the raw by this
-/// ceiling at decode, the output by `resample_output_too_large` — so the transient
-/// is bounded and the guard's 15% headroom plus staggered per-file timing absorbs
-/// it. Sources whose raw PCM would exceed the ceiling fail loud, with `--decoder
-/// ffmpeg` (which streams straight to 16 kHz mono) as the escape for large files.
+/// per-file ceiling on the 16 kHz-mono output (`audio::resample::MAX_OUTPUT_SAMPLES`
+/// derives from it, so the two cannot desync). Decode streams — each packet is
+/// downmixed and resampled as it arrives — so the full-resolution source is never
+/// resident; the only large per-job buffer is the 16 kHz output, bounded here. The
+/// batch pool runs at most `jobs` decodes at once, so resident decode memory tracks
+/// `DECODE_BUFFER * jobs`. A clip whose 16 kHz output would exceed this (~4.6 hours)
+/// fails loud, with `--decoder ffmpeg` as the alternative.
 pub(crate) const DECODE_BUFFER: u64 = 1024 * 1024 * 1024;
 
 /// Resident memory for `model`'s loaded context: weights plus a ~half-weights

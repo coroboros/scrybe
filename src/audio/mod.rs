@@ -34,40 +34,43 @@ impl AudioPcm {
     }
 }
 
-/// Decode `path` and resample to 16 kHz mono f32 PCM via the chosen backend.
+/// Decode `path` to 16 kHz mono f32 PCM via the chosen backend.
 pub fn load_audio(path: &Path, decoder: Decoder) -> Result<AudioPcm, ScrybeError> {
-    let decoded = match decoder {
-        Decoder::Symphonia => decode::decode_file(path)?,
-        Decoder::Ffmpeg => decode::decode_via_ffmpeg(path)?,
-    };
-    let source_sample_rate = decoded.sample_rate;
-    let source_channels = decoded.channels;
-    let mono = downmix(decoded.samples, source_channels);
-    let samples = resample::to_16k_mono(mono, source_sample_rate)
-        .map_err(|detail| ScrybeError::unsupported_codec(path, detail))?;
-    Ok(AudioPcm {
-        samples,
-        source_sample_rate,
-        source_channels,
-    })
+    match decoder {
+        // symphonia streams decode → downmix → resample to 16 kHz mono itself, so the
+        // source is never fully resident.
+        Decoder::Symphonia => decode::decode_file(path),
+        // ffmpeg already emits 16 kHz mono; carry its provenance through unchanged.
+        Decoder::Ffmpeg => {
+            let decoded = decode::decode_via_ffmpeg(path)?;
+            Ok(AudioPcm {
+                samples: decoded.samples,
+                source_sample_rate: decoded.sample_rate,
+                source_channels: decoded.channels,
+            })
+        }
+    }
 }
 
-/// Average interleaved channels down to a single mono channel. Takes ownership so
-/// the already-mono common case returns the buffer without a copy.
-fn downmix(interleaved: Vec<f32>, channels: u16) -> Vec<f32> {
+/// Average one decoded packet's interleaved channels into mono, written into `out`
+/// (cleared first, so the scratch buffer is reused across a streaming decode). Mono
+/// input copies straight through.
+fn downmix_into(interleaved: &[f32], channels: u16, out: &mut Vec<f32>) {
     let channels = usize::from(channels.max(1));
+    out.clear();
     if channels == 1 {
-        return interleaved;
+        out.extend_from_slice(interleaved);
+        return;
     }
-    // Both decode paths yield whole interleaved frames — symphonia emits
-    // frames × channels samples, the ffmpeg path forces mono (`-ac 1`) — so the
-    // buffer length is a multiple of `channels` and `chunks_exact` discards nothing
-    // real. A lone trailing sample only appears on malformed input, where dropping
-    // the incomplete frame is safer than fabricating one.
-    interleaved
-        .chunks_exact(channels)
-        .map(|frame| frame.iter().sum::<f32>() / channels as f32)
-        .collect()
+    // A decoded packet always holds whole interleaved frames (a multiple of
+    // `channels`), so `chunks_exact` discards nothing real; a lone trailing sample
+    // only appears on malformed input, where dropping the incomplete frame is safer
+    // than fabricating one.
+    out.extend(
+        interleaved
+            .chunks_exact(channels)
+            .map(|frame| frame.iter().sum::<f32>() / channels as f32),
+    );
 }
 
 #[cfg(test)]
@@ -75,30 +78,44 @@ mod tests {
     #![allow(clippy::unwrap_used, clippy::expect_used)]
     use super::*;
 
+    fn downmix(interleaved: &[f32], channels: u16) -> Vec<f32> {
+        let mut out = Vec::new();
+        downmix_into(interleaved, channels, &mut out);
+        out
+    }
+
     #[test]
     fn downmix_averages_stereo_to_mono() {
         // L/R interleaved: (1.0,0.0),(0.0,1.0),(0.5,0.5) → 0.5,0.5,0.5
-        let stereo = vec![1.0, 0.0, 0.0, 1.0, 0.5, 0.5];
-        assert_eq!(downmix(stereo, 2), vec![0.5, 0.5, 0.5]);
+        let stereo = [1.0, 0.0, 0.0, 1.0, 0.5, 0.5];
+        assert_eq!(downmix(&stereo, 2), vec![0.5, 0.5, 0.5]);
     }
 
     #[test]
     fn downmix_mono_is_passthrough() {
-        let mono = vec![0.1, 0.2, 0.3];
-        assert_eq!(downmix(mono.clone(), 1), mono);
+        let mono = [0.1, 0.2, 0.3];
+        assert_eq!(downmix(&mono, 1), mono.to_vec());
     }
 
     #[test]
     fn downmix_averages_three_channels() {
         // One 3-channel frame [1,2,3] → mean 2.0; pins the general (>2 channels) arm.
-        assert_eq!(downmix(vec![1.0, 2.0, 3.0], 3), vec![2.0]);
+        assert_eq!(downmix(&[1.0, 2.0, 3.0], 3), vec![2.0]);
     }
 
     #[test]
     fn downmix_drops_trailing_partial_frame() {
         // `chunks_exact` ignores a lone trailing sample that doesn't complete a
         // stereo frame — documenting that intended behavior.
-        let stereo = vec![1.0, 0.0, 0.0, 1.0, 0.5];
-        assert_eq!(downmix(stereo, 2), vec![0.5, 0.5]);
+        let stereo = [1.0, 0.0, 0.0, 1.0, 0.5];
+        assert_eq!(downmix(&stereo, 2), vec![0.5, 0.5]);
+    }
+
+    #[test]
+    fn downmix_into_clears_the_scratch_between_packets() {
+        // The reused scratch must not accumulate across packets.
+        let mut out = vec![9.0, 9.0, 9.0];
+        downmix_into(&[1.0, 0.0, 0.0, 1.0], 2, &mut out);
+        assert_eq!(out, vec![0.5, 0.5], "previous contents must be cleared");
     }
 }

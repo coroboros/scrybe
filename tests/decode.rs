@@ -75,15 +75,21 @@ fn wav_header(data_size: u32) -> Vec<u8> {
 }
 
 #[test]
-fn oversized_declared_length_is_rejected_loud() {
-    // ~350M declared frames > the 1 GiB raw ceiling, but the file is header-only:
-    // decode_file's pre-decode ceiling check (on declared num_frames) must fire.
+fn crafted_declared_length_does_not_preallocate() {
+    // A header declaring ~350M frames with no data body. The streaming decoder never
+    // pre-allocates from the declared length (the source is resampled packet by packet,
+    // never fully resident), so a crafted huge length cannot force a multi-GB alloc; the
+    // header-only file simply yields no audio and fails loud with exit 10 — promptly,
+    // not after an OOM.
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("huge.wav");
     std::fs::write(&path, wav_header(700_000_000)).unwrap();
     let err = decode(path.to_str().unwrap(), Decoder::Symphonia).unwrap_err();
     assert_eq!(err.exit_code(), 10);
-    assert!(err.to_string().contains("too large"), "got: {err}");
+    assert!(
+        err.to_string().contains("no decodable audio") || err.to_string().contains("no audio"),
+        "got: {err}"
+    );
 }
 
 #[test]
