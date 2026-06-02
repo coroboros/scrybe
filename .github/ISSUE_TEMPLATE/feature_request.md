@@ -7,13 +7,12 @@ labels: enhancement
 
 ## Problem
 
-The use case or limitation you are hitting. What are you trying to do that scrybe
-cannot do today?
+The use case or limitation. Describe what scrybe cannot do today.
 
-## Proposed solution
+## Proposed change
 
-What you would like to happen — a flag, an output format, a behavior change.
+The desired behavior — a flag, an output format, a different default.
 
 ## Alternatives
 
-Workarounds you have tried, or other tools that solve this.
+Workarounds already tried, or other tools that handle this.

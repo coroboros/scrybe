@@ -165,6 +165,7 @@ The cache honors `HF_HOME`. Downloads are resumable and verified against a pinne
 | `srt` | `.srt` | SubRip cues with `HH:MM:SS,mmm` timing. |
 | `vtt` | `.vtt` | WebVTT cues with `HH:MM:SS.mmm` timing. |
 | `tsv` | `.tsv` | `start`, `end` (milliseconds), `text` columns. |
+| `csv` | `.csv` | `start`, `end` (milliseconds), `text` — RFC 4180 quoted. |
 | `json` | `.json` | Stable versioned schema — model, language, duration, segments. |
 
 Subtitle timestamps are sanitized: never negative, never overlapping. JSON carries a `schema_version` so downstream tooling can pin it.
@@ -233,13 +234,13 @@ Stable across releases — only ever added, never renumbered.
 | Native multi-codec decode, no system `ffmpeg` | no | no (16 kHz WAV / ffmpeg) | no | no | yes |
 | Apple Silicon GPU (Metal) | no (CPU/CUDA) | yes | no (CPU/CUDA) | no (CUDA) | yes |
 | Folder/batch with progress + summary | no | no | no | no | yes |
-| Output txt/srt/vtt/json/tsv | yes | yes (+csv) | via wrapper | yes | yes |
+| Output txt/srt/vtt/json/tsv/csv | yes (no csv) | yes (no tsv) | via wrapper | yes (no tsv/csv) | yes |
 | Zero-config model + concurrency | no | no | no | no | yes |
 | Stable exit-code contract | no | no | no | no | yes |
 | Word-level timestamps | yes | yes | yes | yes (alignment) | yes (JSON) |
 | Speaker diarization | no | no | no | yes | not yet (v2) |
 
-scrybe's niche is a single self-contained binary that decodes any common codec and batch-transcribes offline, with Metal acceleration, no Python environment and no system `ffmpeg`. The Python tools — [`openai-whisper`](https://github.com/openai/whisper), [`faster-whisper`](https://github.com/SYSTRAN/faster-whisper), and [`WhisperX`](https://github.com/m-bain/whisperX) — are richer (word-level timestamps, and diarization in WhisperX) but require a Python environment, a system `ffmpeg`, and usually CUDA. [`whisper.cpp`](https://github.com/ggml-org/whisper.cpp) is the engine scrybe embeds; its own CLI expects pre-converted 16 kHz WAV (or an ffmpeg-enabled build), and leaves model selection, codec decode, batch UX, and output formatting to you. scrybe adds those on top, including word-level timestamps in its JSON. For speaker diarization today, reach for WhisperX; scrybe plans it for v2.
+scrybe's niche is a single self-contained binary that decodes any common codec and batch-transcribes offline, with Metal acceleration, no Python environment and no system `ffmpeg`. The Python tools — [`openai-whisper`](https://github.com/openai/whisper), [`faster-whisper`](https://github.com/SYSTRAN/faster-whisper), and [`WhisperX`](https://github.com/m-bain/whisperX) — are richer (word-level timestamps, and diarization in WhisperX) but require a Python environment, a system `ffmpeg`, and usually CUDA. [`whisper.cpp`](https://github.com/ggml-org/whisper.cpp) is the engine scrybe embeds; its own CLI expects pre-converted 16 kHz WAV (or an ffmpeg-enabled build), and leaves model selection, codec decode, batch UX, and output formatting to the caller. scrybe adds those on top, including word-level timestamps in its JSON. For speaker diarization today, reach for WhisperX; scrybe plans it for v2.
 
 ## Contributing
 
@@ -252,4 +253,4 @@ Bug reports and PRs welcome.
 
 ## License
 
-[MIT](LICENSE.md) © Coroboros
+[MIT](LICENSE.md)

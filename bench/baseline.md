@@ -26,8 +26,8 @@ The `metal` build (`cargo build --release --features metal`) offloads inference 
 
 The GPU win grows with model size — `large-v3-turbo` is ~2.6× faster than CPU here,
 while the small models are already overhead-bound and barely move. Larger chips (M-series
-Pro/Max/Ultra) widen the gap; measure yours with `bench/run.sh` on a `--features metal`
-build.
+Pro/Max/Ultra) widen the gap. Run `bench/run.sh` on a `--features metal` build to measure
+a given chip.
 
 ## Method
 

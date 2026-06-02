@@ -7,7 +7,7 @@ labels: bug
 
 ## What happened
 
-A clear description of the bug and what you expected instead.
+A clear description of the bug and the expected behavior.
 
 ## Reproduce
 
