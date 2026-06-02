@@ -212,14 +212,12 @@ pub fn guard_memory(model: Model, jobs: usize, total: Option<u64>) -> Result<(),
 }
 
 /// The HuggingFace hub cache directory (`$HF_HOME/hub` or `~/.cache/huggingface/hub`).
+/// Derived from hf-hub's own resolution so it agrees with where downloads actually
+/// land on every platform — `dirs::home_dir()` resolves `%USERPROFILE%` on Windows,
+/// where `HOME` is usually unset. Single source: the lookup, the download, `models
+/// path`, and the bundled-VAD directory all share this root.
 pub fn cache_dir() -> PathBuf {
-    if let Ok(hf_home) = std::env::var("HF_HOME") {
-        return PathBuf::from(hf_home).join("hub");
-    }
-    if let Ok(home) = std::env::var("HOME") {
-        return PathBuf::from(home).join(".cache/huggingface/hub");
-    }
-    PathBuf::from(".cache/huggingface/hub")
+    Cache::from_env().path().join("hub")
 }
 
 /// The cached path for a repo file, or `None` when it is not yet downloaded.

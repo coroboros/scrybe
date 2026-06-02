@@ -23,6 +23,9 @@ anstyle = "1.0.14"
 audioadapter-buffers = "3.0.0"
 clap = { version = "4.6.1", features = ["derive"] }
 ctrlc = "3.5.2"
+# `default-features = false` + the sync `ureq` backend keeps the async reqwest/hyper/
+# tokio stack out of the dependency tree entirely (`cargo tree -i reqwest` is empty);
+# rustls-tls avoids a system OpenSSL dependency, so the build stays self-contained.
 hf-hub = { version = "0.5.0", default-features = false, features = ["ureq", "rustls-tls"] }
 indicatif = "0.18.4"
 rayon = "1.12.0"

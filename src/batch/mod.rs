@@ -7,9 +7,9 @@
 //! summarizes the run.
 
 use std::path::PathBuf;
-use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::sync_channel;
+use std::sync::{Arc, OnceLock};
 use std::time::{Duration, Instant};
 
 use indicatif::{MultiProgress, ProgressBar, ProgressStyle};
@@ -138,19 +138,30 @@ struct FileResult {
     outcome: Outcome,
 }
 
+/// The process-global interrupt flag the SIGINT handler sets. The handler is
+/// installed once and references this flag, so every `run` observes Ctrl-C — binding
+/// the handler to a per-run flag would leave a second run deaf to SIGINT.
+static INTERRUPT: OnceLock<Arc<AtomicBool>> = OnceLock::new();
+
+/// The shared interrupt flag, installing the SIGINT handler on first use. First Ctrl-C
+/// requests a graceful stop; a pre-existing handler (e.g. another caller's) is left in
+/// place.
+fn interrupt_flag() -> &'static Arc<AtomicBool> {
+    INTERRUPT.get_or_init(|| {
+        let flag = Arc::new(AtomicBool::new(false));
+        let handler_flag = Arc::clone(&flag);
+        let _ = ctrlc::set_handler(move || handler_flag.store(true, Ordering::SeqCst));
+        flag
+    })
+}
+
 /// Run the batch. Returns the process exit code: 0 all clear, 20 partial failure.
-///
-/// Installs a process-global SIGINT handler bound to *this* run's interrupt flag, so
-/// it is meant to be called once per process (the binary does). A second call sets a
-/// fresh flag the already-installed handler never updates — the first handler wins,
-/// and the second run would not observe Ctrl-C.
+/// Safe to call more than once per process: the SIGINT handler is installed once over
+/// a shared flag, reset at the start of each run, so every run observes Ctrl-C.
 pub fn run(engine: &Engine, files: &[PathBuf], cfg: &Config<'_>) -> Result<i32, ScrybeError> {
-    let interrupted = Arc::new(AtomicBool::new(false));
-    {
-        let flag = Arc::clone(&interrupted);
-        // First Ctrl-C requests a graceful stop; ignore if a handler already exists.
-        let _ = ctrlc::set_handler(move || flag.store(true, Ordering::SeqCst));
-    }
+    let interrupted = Arc::clone(interrupt_flag());
+    // Clear any interrupt left from a prior run so this one starts live.
+    interrupted.store(false, Ordering::SeqCst);
 
     let multi = MultiProgress::new();
     let aggregate = multi.add(ProgressBar::new(files.len() as u64));
