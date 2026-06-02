@@ -14,15 +14,20 @@ wall time only). Reproduce with [`run.sh`](run.sh).
 
 `small` and `large-v3` need a model download first; `run.sh` adds them when asked.
 
-## Metal — Apple Silicon
+## Metal — Apple M1, 8 cores, 16 GB
 
-The `metal` build offloads inference to the GPU; the speedup depends on the chip, so
-measure it on the target rather than quote a number here:
+The `metal` build (`cargo build --release --features metal`) offloads inference to the GPU:
 
-```sh
-cargo build --release --features metal
-bench/run.sh large-v3-turbo large-v3
-```
+| Model | ×RT | Wall |
+| --- | ---: | ---: |
+| `tiny` | 33.6× | 1.7 s |
+| `base` | 31.3× | 1.8 s |
+| `large-v3-turbo` | 8.1× | 6.9 s |
+
+The GPU win grows with model size — `large-v3-turbo` is ~2.6× faster than CPU here,
+while the small models are already overhead-bound and barely move. Larger chips (M-series
+Pro/Max/Ultra) widen the gap; measure yours with `bench/run.sh` on a `--features metal`
+build.
 
 ## Method
 

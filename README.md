@@ -95,7 +95,7 @@ Running Whisper from the terminal usually means a Python environment, a system `
 
 Weights are ggml builds from the whisper.cpp Hugging Face repos. Only `large-v3` translates to English (`--task translate`); the gate rejects the others before any download. With `--model` omitted, scrybe resolves the largest model that fits detected RAM at the chosen job count.
 
-On an Apple M1, CPU-only, `tiny` transcribes at ~31×RT and `large-v3-turbo` at ~3×RT; Metal accelerates this further on Apple Silicon. Full numbers and method: [`bench/baseline.md`](bench/baseline.md).
+On an Apple M1, `tiny` transcribes at ~31×RT on CPU and `large-v3-turbo` at ~3×RT, rising to ~8×RT on Metal. Full numbers and method: [`bench/baseline.md`](bench/baseline.md).
 
 ## Codecs
 
