@@ -3,12 +3,6 @@
 ## v0.1.2 - 09/06/2026
 
 ### Features
-- scrybe — offline Whisper transcription CLI
-
-
-## v0.1.0 - 01/06/2026
-
-### Features
 - CLI surface — `scrybe <paths>` plus `models list/pull/remove/path`, with `--model --lang --task --format --out-dir --jobs --threads --recursive --force --dry-run --decoder --no-color --json --offline`
 - Audio ingest — discover files/folders, decode mp3/wav/flac/ogg/m4a (AAC-LC, ALAC) with symphonia, resample to 16 kHz mono via rubato; HE-AAC/SBR fails loud (exit `10`) with the `--decoder ffmpeg` escape
 - Model cache — registry of six whisper.cpp ggml models with pinned SHA-256, resumable hf-hub downloads, `--offline`, and an 8 GB-aware memory guard
@@ -21,4 +15,4 @@
 ### Configuration
 - Rust crate (lib + bin), `rust-toolchain.toml` pinned to `1.96`, `rustfmt.toml`, clippy lints denying `unwrap`/`expect`/`panic`, MIT `LICENSE.md`
 - CI — fmt, clippy (`-D warnings`), and CPU-backend tests on Linux, macOS, and Windows with the golden-transcript model cached, a Metal compile-only smoke, and a `cargo-deny` supply-chain gate
-- Release automation config — `cargo-dist` targets/installers (Homebrew, npm, shell, PowerShell) and `release-plz`
+- Release automation config — `cargo-dist` targets/installers (Homebrew, npm, shell, PowerShell), released through the shared `coroboros/ci` pipeline
