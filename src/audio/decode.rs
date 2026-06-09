@@ -1,0 +1,572 @@
+//! Decode audio files to 16 kHz mono f32 PCM.
+//!
+//! The default path is pure-Rust symphonia, streaming each decoded packet through a
+//! downmix and the [`Resampler16k`] as it arrives, so the full-resolution source is
+//! never resident — only the bounded 16 kHz output. HE-AAC/SBR is detected up front
+//! and rejected with an actionable message (symphonia is AAC-LC only). The optional
+//! ffmpeg path shells out for codecs symphonia cannot handle, and already emits
+//! 16 kHz mono directly.
+
+use std::io::Read as _;
+use std::path::Path;
+use std::process::{Command, Stdio};
+
+use symphonia::core::codecs::audio::AudioDecoderOptions;
+use symphonia::core::errors::Error as SymphoniaError;
+use symphonia::core::formats::probe::Hint;
+use symphonia::core::formats::{FormatOptions, TrackType};
+use symphonia::core::io::MediaSourceStream;
+use symphonia::core::meta::MetadataOptions;
+
+use super::resample::{ResampleError, Resampler16k};
+use super::{AudioPcm, TARGET_SAMPLE_RATE, downmix_into};
+use crate::error::ScrybeError;
+
+/// Initial f32 capacity for the streamed ffmpeg decode — ~4 MB. Amortizes the early
+/// reallocs on a long decode without a large speculative allocation; the in-loop
+/// ceiling still bounds real growth, and a smaller `max_samples` caps it below this.
+const STREAM_PRESIZE_SAMPLES: usize = 1024 * 1024;
+
+/// 16 kHz mono f32 PCM (from the ffmpeg path), plus the source stream's rate and
+/// channel count for provenance.
+pub struct Decoded {
+    pub samples: Vec<f32>,
+    pub sample_rate: u32,
+    pub channels: u16,
+}
+
+/// Map a streaming-resample failure to a coded, actionable decode error.
+fn resample_error(path: &Path, error: ResampleError) -> ScrybeError {
+    match error {
+        ResampleError::Overflow => ScrybeError::unsupported_codec(
+            path,
+            "audio is too long to decode in memory (~4.6 h of 16 kHz mono); use a shorter clip or `--decoder ffmpeg`",
+        ),
+        ResampleError::Failed(detail) => {
+            ScrybeError::unsupported_codec(path, format!("resampling to 16 kHz failed: {detail}"))
+        }
+    }
+}
+
+/// Decode with symphonia, streaming to 16 kHz mono. Fails loud (no silent/garbled
+/// output) on unsupported codecs, including HE-AAC, pointing the user at the ffmpeg
+/// escape. Each packet is downmixed and resampled as it decodes, so memory tracks the
+/// 16 kHz output, not the source — a long, high-rate file no longer hits a source cap.
+pub fn decode_file(path: &Path) -> Result<AudioPcm, ScrybeError> {
+    let unsupported = |detail: String| ScrybeError::unsupported_codec(path, detail);
+
+    let file = std::fs::File::open(path).map_err(|e| unsupported(e.to_string()))?;
+    let mss = MediaSourceStream::new(Box::new(file), Default::default());
+
+    let mut hint = Hint::new();
+    if let Some(ext) = path.extension().and_then(|e| e.to_str()) {
+        hint.with_extension(ext);
+    }
+
+    let mut format = symphonia::default::get_probe()
+        .probe(
+            &hint,
+            mss,
+            FormatOptions::default(),
+            MetadataOptions::default(),
+        )
+        .map_err(|e| unsupported(format!("could not read container: {e}")))?;
+
+    let track = format
+        .default_track(TrackType::Audio)
+        .ok_or_else(|| unsupported("no audio track found".to_owned()))?;
+    let track_id = track.id;
+
+    let audio_params = track
+        .codec_params
+        .as_ref()
+        .and_then(|params| params.audio())
+        .ok_or_else(|| unsupported("missing audio codec parameters".to_owned()))?;
+
+    let sample_rate = audio_params
+        .sample_rate
+        .ok_or_else(|| unsupported("unknown sample rate".to_owned()))?;
+    let channels = audio_params
+        .channels
+        .as_ref()
+        .map_or(1, |ch| ch.count() as u16)
+        .max(1);
+
+    if let Some(extra) = audio_params.extra_data.as_deref()
+        && is_he_aac_asc(extra)
+    {
+        return Err(unsupported(
+            "HE-AAC/SBR is not supported by the built-in decoder".to_owned(),
+        ));
+    }
+
+    let mut decoder = symphonia::default::get_codecs()
+        .make_audio_decoder(audio_params, &AudioDecoderOptions::default())
+        .map_err(|e| unsupported(format!("no decoder for this codec: {e}")))?;
+
+    let mut resampler = Resampler16k::new(sample_rate).map_err(|e| resample_error(path, e))?;
+    let mut interleaved: Vec<f32> = Vec::new(); // reused per packet
+    let mut mono: Vec<f32> = Vec::new(); // reused per packet
+    let mut decoded_any = false;
+    loop {
+        match format.next_packet() {
+            Ok(Some(packet)) => {
+                if packet.track_id != track_id {
+                    continue;
+                }
+                match decoder.decode(&packet) {
+                    Ok(decoded) => {
+                        decoded.copy_to_vec_interleaved(&mut interleaved);
+                        if interleaved.is_empty() {
+                            continue;
+                        }
+                        decoded_any = true;
+                        downmix_into(&interleaved, channels, &mut mono);
+                        resampler.push(&mono).map_err(|e| resample_error(path, e))?;
+                    }
+                    Err(SymphoniaError::DecodeError(_) | SymphoniaError::IoError(_)) => continue,
+                    Err(e) => return Err(unsupported(format!("decode error: {e}"))),
+                }
+            }
+            Ok(None) => break,
+            // A chained/multi-segment stream changes track params mid-file. Rather
+            // than silently truncate to the first segment, fail loud and point at
+            // the ffmpeg path, which handles it.
+            Err(SymphoniaError::ResetRequired) => {
+                return Err(unsupported(
+                    "chained or multi-segment stream is not supported; retry with `--decoder ffmpeg`"
+                        .to_owned(),
+                ));
+            }
+            // End of stream is signalled as an unexpected-EOF I/O error; treat only
+            // that as the end. Any other I/O error is a genuine read failure — fail
+            // loud rather than silently truncate the transcript.
+            Err(SymphoniaError::IoError(e)) if e.kind() == std::io::ErrorKind::UnexpectedEof => {
+                break;
+            }
+            Err(SymphoniaError::IoError(e)) => {
+                return Err(unsupported(format!("read error: {e}")));
+            }
+            Err(e) => return Err(unsupported(format!("read error: {e}"))),
+        }
+    }
+
+    if !decoded_any {
+        return Err(unsupported("file contained no decodable audio".to_owned()));
+    }
+    let samples = resampler.finish().map_err(|e| resample_error(path, e))?;
+    if samples.is_empty() {
+        return Err(unsupported("file contained no decodable audio".to_owned()));
+    }
+    Ok(AudioPcm {
+        samples,
+        source_sample_rate: sample_rate,
+        source_channels: channels,
+    })
+}
+
+/// Why streaming f32le decode stopped early.
+#[derive(Debug)]
+enum StreamError {
+    /// The running sample count exceeded the caller's ceiling.
+    Overflow,
+    /// A read from the source failed.
+    Io(std::io::Error),
+}
+
+/// Decode an f32-little-endian byte stream into samples, reassembling values that
+/// straddle reads and bailing with `Overflow` once `max_samples` is passed. Pure
+/// over any `Read`, so the byte reassembly and the ceiling are unit-testable
+/// without spawning a subprocess; the caller owns any process teardown.
+fn read_f32le_stream<R: std::io::Read>(
+    mut src: R,
+    max_samples: usize,
+) -> Result<Vec<f32>, StreamError> {
+    let mut samples: Vec<f32> = Vec::with_capacity(STREAM_PRESIZE_SAMPLES.min(max_samples));
+    let mut pending: Vec<u8> = Vec::new(); // < 4 leftover bytes spanning reads
+    let mut buf = [0u8; 1 << 16];
+    loop {
+        let read = src.read(&mut buf).map_err(StreamError::Io)?;
+        if read == 0 {
+            break;
+        }
+        pending.extend_from_slice(&buf[..read]);
+        let full = pending.len() / 4 * 4;
+        samples.extend(
+            pending[..full]
+                .chunks_exact(4)
+                .map(|b| f32::from_le_bytes([b[0], b[1], b[2], b[3]])),
+        );
+        pending.drain(..full);
+        if samples.len() > max_samples {
+            return Err(StreamError::Overflow);
+        }
+    }
+    Ok(samples)
+}
+
+/// Decode by shelling out to a system `ffmpeg`, producing 16 kHz mono f32 PCM
+/// directly. The escape hatch for codecs symphonia cannot handle (e.g. HE-AAC). Caps
+/// the output at the same 16 kHz-mono ceiling as the symphonia path.
+pub fn decode_via_ffmpeg(path: &Path) -> Result<Decoded, ScrybeError> {
+    decode_via_ffmpeg_capped(path, super::resample::MAX_OUTPUT_SAMPLES)
+}
+
+/// `decode_via_ffmpeg` with an injectable sample ceiling, so the overflow teardown
+/// (kill the child and stop reading *before* joining the stderr drain) is testable
+/// against a real subprocess in bounded time rather than only at the ~4.6-hour cap.
+fn decode_via_ffmpeg_capped(path: &Path, max_samples: usize) -> Result<Decoded, ScrybeError> {
+    let unsupported = |detail: String| ScrybeError::unsupported_codec(path, detail);
+
+    // `-i` consumes its next argument literally (ffmpeg has no `--` end-of-options
+    // marker), so a leading-dash name is already safe; canonicalizing to an absolute
+    // path is defense-in-depth, and falls back to the raw path if it fails.
+    let input = std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
+    let mut child = Command::new("ffmpeg")
+        // `-nostdin` so a crafted container can never coax ffmpeg into reading the
+        // parent's stdin (defense-in-depth; not exploitable as invoked here).
+        .args(["-nostdin", "-v", "error", "-i"])
+        .arg(&input)
+        .args(["-f", "f32le", "-acodec", "pcm_f32le", "-ac", "1", "-ar"])
+        .arg(TARGET_SAMPLE_RATE.to_string())
+        .arg("pipe:1")
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .map_err(|e| {
+            if e.kind() == std::io::ErrorKind::NotFound {
+                unsupported("`--decoder ffmpeg` requested but ffmpeg is not on PATH".to_owned())
+            } else {
+                unsupported(format!("failed to run ffmpeg: {e}"))
+            }
+        })?;
+
+    let (Some(mut stdout), Some(mut stderr)) = (child.stdout.take(), child.stderr.take()) else {
+        let _ = child.kill();
+        let _ = child.wait();
+        return Err(unsupported("could not capture ffmpeg output".to_owned()));
+    };
+
+    // Stream stdout, bailing the moment the running total passes the ceiling, so peak
+    // memory stays bounded by `MAX_OUTPUT_SAMPLES`. Drain stderr on a scoped thread
+    // concurrently, so a corrupt input that floods stderr can't deadlock the stdout read.
+    let (decoded, errs) = std::thread::scope(|scope| {
+        let reader = scope.spawn(move || {
+            let mut buf = String::new();
+            let _ = stderr.read_to_string(&mut buf);
+            buf
+        });
+        let decoded = read_f32le_stream(&mut stdout, max_samples);
+        // On early stop (Overflow/Io) ffmpeg may still be writing to a now-undrained
+        // stdout pipe; it would block on the full pipe and never close stderr, hanging
+        // the join forever. Kill it and drop the read end BEFORE joining, so stderr
+        // hits EOF and the scope returns. (Killing here, inside the scope, is what
+        // makes the post-scope teardown reachable — the earlier ordering deadlocked.)
+        if decoded.is_err() {
+            let _ = child.kill();
+        }
+        drop(stdout);
+        (decoded, reader.join().unwrap_or_default())
+    });
+    // The error path already killed the child above; just reap it. Otherwise wait for
+    // the real exit status. Result classification is a pure, unit-tested helper.
+    let success = match &decoded {
+        Err(_) => {
+            let _ = child.wait();
+            false
+        }
+        Ok(_) => child
+            .wait()
+            .map_err(|e| unsupported(format!("waiting for ffmpeg failed: {e}")))?
+            .success(),
+    };
+    let samples = ffmpeg_outcome(path, decoded, success, &errs)?;
+    Ok(Decoded {
+        samples,
+        sample_rate: TARGET_SAMPLE_RATE,
+        channels: 1,
+    })
+}
+
+/// Classify a finished ffmpeg decode into samples or a coded error. Pure (no process
+/// I/O — teardown stays in `decode_via_ffmpeg`), so the overflow / read-error /
+/// non-zero-exit / empty-output arms are unit-testable without spawning ffmpeg.
+fn ffmpeg_outcome(
+    path: &Path,
+    decoded: Result<Vec<f32>, StreamError>,
+    success: bool,
+    stderr: &str,
+) -> Result<Vec<f32>, ScrybeError> {
+    let unsupported = |detail: String| ScrybeError::unsupported_codec(path, detail);
+    match decoded {
+        Err(StreamError::Overflow) => Err(unsupported(
+            "audio is too large to decode in memory (~4.6 h of 16 kHz mono); split it into shorter clips".to_owned(),
+        )),
+        Err(StreamError::Io(e)) => Err(unsupported(format!("reading ffmpeg output failed: {e}"))),
+        Ok(_) if !success => Err(unsupported(format!("ffmpeg failed: {}", stderr.trim()))),
+        Ok(samples) if samples.is_empty() => {
+            Err(unsupported("ffmpeg produced no audio".to_owned()))
+        }
+        Ok(samples) => Ok(samples),
+    }
+}
+
+/// Big-endian bit reader over the AudioSpecificConfig byte stream.
+struct BitReader<'a> {
+    data: &'a [u8],
+    pos: usize,
+}
+
+impl<'a> BitReader<'a> {
+    fn at(data: &'a [u8], pos: usize) -> Self {
+        Self { data, pos }
+    }
+
+    fn read(&mut self, n: usize) -> Option<u32> {
+        let mut value = 0u32;
+        for _ in 0..n {
+            let byte = *self.data.get(self.pos / 8)?;
+            let bit = (byte >> (7 - (self.pos % 8))) & 1;
+            value = (value << 1) | u32::from(bit);
+            self.pos += 1;
+        }
+        Some(value)
+    }
+}
+
+/// The MPEG-4 audio object type, decoding the 5-bit value plus the `31` escape
+/// to a 6-bit extended type (`32 + value`).
+fn read_object_type(reader: &mut BitReader<'_>) -> Option<u32> {
+    let aot = reader.read(5)?;
+    if aot == 31 {
+        Some(32 + reader.read(6)?)
+    } else {
+        Some(aot)
+    }
+}
+
+/// SBR sync extension marker inside an AudioSpecificConfig (ISO 14496-3).
+const SBR_SYNC_EXTENSION: u32 = 0x2B7;
+
+/// Detect HE-AAC / HE-AACv2 from an AudioSpecificConfig. Covers both signalings:
+/// explicit hierarchical (base object type 5 = SBR, 29 = PS) and backward-
+/// compatible (base type 2 + the `0x2B7` sync extension declaring SBR/PS), which
+/// is what Apple's encoder emits and what symphonia silently mis-decodes.
+///
+/// The backward-compatible extension sits at a determinate bit offset, right after
+/// the GASpecificConfig — so the config is parsed structurally to reach it rather
+/// than scanning the whole payload, which could match `0x2B7` coincidentally
+/// inside a valid AAC-LC config and false-reject it.
+fn is_he_aac_asc(asc: &[u8]) -> bool {
+    let mut r = BitReader::at(asc, 0);
+    let Some(aot) = read_object_type(&mut r) else {
+        return false;
+    };
+    if aot == 5 || aot == 29 {
+        return true;
+    }
+    // samplingFrequencyIndex (15 escapes to an explicit 24-bit rate).
+    let Some(sfi) = r.read(4) else { return false };
+    if sfi == 0x0f && r.read(24).is_none() {
+        return false;
+    }
+    // GASpecificConfig has a determinate length only with an explicit channel
+    // configuration (1..=7). Config 0 carries a variable program_config_element;
+    // a backward-compatible SBR extension does not occur there in practice, so it
+    // is treated as plain AAC-LC (recoverable via `--decoder ffmpeg` if ever wrong).
+    let Some(channels) = r.read(4) else {
+        return false;
+    };
+    if !(1..=7).contains(&channels) {
+        return false;
+    }
+    // Minimal GASpecificConfig for standalone AAC: frameLengthFlag,
+    // dependsOnCoreCoder (+14-bit coreCoderDelay when set), extensionFlag.
+    if r.read(1).is_none() {
+        return false;
+    }
+    match r.read(1) {
+        Some(0) => {}
+        Some(_) if r.read(14).is_some() => {}
+        _ => return false,
+    }
+    // extensionFlag. Conformant AAC-LC (AOT 2) sets it to 0, leaving the sync
+    // extension at the determinate offset read below. A set flag introduces
+    // AOT-specific trailing bits we don't consume, so the 11-bit read misaligns and
+    // almost never matches 0x2B7 — the stream then falls through to the AAC-LC path
+    // (symphonia, or `--decoder ffmpeg` if that mis-decodes). A non-issue for the
+    // backward-compatible HE-AAC this targets, where the flag is 0.
+    if r.read(1).is_none() {
+        return false;
+    }
+    // syncExtensionType at its determinate position, then the extension AOT.
+    r.read(11) == Some(SBR_SYNC_EXTENSION) && matches!(read_object_type(&mut r), Some(5 | 29))
+}
+
+#[cfg(test)]
+mod tests {
+    #![allow(clippy::unwrap_used, clippy::expect_used)]
+    use super::*;
+
+    #[test]
+    fn detects_explicit_sbr_and_ps() {
+        // HE-AAC (SBR): base object type 5 → top 5 bits 00101 → 0x28.
+        assert!(is_he_aac_asc(&[0x28, 0x00]));
+        // HE-AACv2 (PS): base object type 29 → 11101 → 0xE8.
+        assert!(is_he_aac_asc(&[0xE8, 0x00]));
+    }
+
+    #[test]
+    fn detects_backward_compatible_sbr() {
+        // Real Apple HE-AAC ASC: base AOT 2 + 0x2B7 sync extension + ext AOT 5.
+        assert!(is_he_aac_asc(&[0x14, 0x10, 0x56, 0xe5, 0xa8]));
+    }
+
+    #[test]
+    fn detects_sbr_with_no_trailing_bytes() {
+        // Backward-compatible SBR (0x2B7 + ext AOT 5) ending exactly at the ASC
+        // boundary, no padding after the extension.
+        assert!(is_he_aac_asc(&[0x12, 0x10, 0x56, 0xe5]));
+    }
+
+    #[test]
+    fn channel_config_zero_is_not_false_rejected() {
+        // AAC-LC with channelConfiguration 0 (program config element). The tail
+        // bytes embed 0x2B7 + AOT 5, so the old whole-buffer scan false-rejected
+        // it as HE-AAC; structural parsing stops at the channel config and treats
+        // it as plain AAC-LC. (Same bytes as the positive fixture, channels → 0.)
+        assert!(!is_he_aac_asc(&[0x14, 0x00, 0x56, 0xe5, 0xa8]));
+    }
+
+    /// A `Read` that yields at most `chunk` bytes per call, so a 4-byte f32 can
+    /// straddle reads — exercising the carry path.
+    struct ChunkedReader<'a> {
+        data: &'a [u8],
+        pos: usize,
+        chunk: usize,
+    }
+
+    impl std::io::Read for ChunkedReader<'_> {
+        fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+            let n = self.data[self.pos..].len().min(self.chunk).min(buf.len());
+            buf[..n].copy_from_slice(&self.data[self.pos..self.pos + n]);
+            self.pos += n;
+            Ok(n)
+        }
+    }
+
+    #[test]
+    fn read_f32le_stream_reassembles_split_samples() {
+        // Two f32 split across 3-byte reads, so both straddle a read boundary.
+        let bytes: Vec<u8> = 1.5f32
+            .to_le_bytes()
+            .into_iter()
+            .chain((-2.25f32).to_le_bytes())
+            .collect();
+        let reader = ChunkedReader {
+            data: &bytes,
+            pos: 0,
+            chunk: 3,
+        };
+        let out = read_f32le_stream(reader, usize::MAX).unwrap();
+        assert_eq!(out, vec![1.5, -2.25]);
+    }
+
+    #[test]
+    fn read_f32le_stream_bails_on_overflow() {
+        let bytes = vec![0u8; 12]; // three f32
+        let reader = ChunkedReader {
+            data: &bytes,
+            pos: 0,
+            chunk: 5,
+        };
+        assert!(matches!(
+            read_f32le_stream(reader, 2),
+            Err(StreamError::Overflow)
+        ));
+    }
+
+    #[test]
+    fn ffmpeg_overflow_kills_child_without_deadlock() {
+        // Real-subprocess regression for the overflow teardown. en.wav (~3 s →
+        // ~192 KB of f32le, well past the 64 KB pipe buffer) decoded via ffmpeg with a
+        // 100-sample ceiling: the reader stops early while ffmpeg keeps writing and
+        // blocks on the full pipe. The teardown must kill the child and return the
+        // Overflow error (exit 10), not hang on the stderr-reader join. Under the
+        // previous join-before-kill ordering this hangs — a regression fails via the
+        // test timeout instead of passing.
+        let ffmpeg_ok = Command::new("ffmpeg")
+            .arg("-version")
+            .output()
+            .is_ok_and(|o| o.status.success());
+        if !ffmpeg_ok {
+            // Hard-fail where ffmpeg is guaranteed (CI sets SCRYBE_REQUIRE_FFMPEG) so
+            // this regression can't silently no-op; skip cleanly otherwise.
+            assert!(
+                std::env::var_os("SCRYBE_REQUIRE_FFMPEG").is_none(),
+                "ffmpeg required (SCRYBE_REQUIRE_FFMPEG is set) but not on PATH",
+            );
+            eprintln!("skipping: ffmpeg not on PATH");
+            return;
+        }
+        let err = decode_via_ffmpeg_capped(Path::new("tests/fixtures/speech/en.wav"), 100)
+            .err()
+            .expect("oversized decode must fail, not hang or succeed");
+        assert_eq!(err.exit_code(), 10);
+        assert!(err.to_string().contains("too large"), "{err}");
+    }
+
+    #[test]
+    fn ffmpeg_outcome_classifies_every_arm() {
+        let p = Path::new("/x.m4a");
+        // Overflow → too-large, exit 10.
+        let e = ffmpeg_outcome(p, Err(StreamError::Overflow), true, "").unwrap_err();
+        assert_eq!(e.exit_code(), 10);
+        assert!(e.to_string().contains("too large"), "{e}");
+        // Read error → read-failure message.
+        let e = ffmpeg_outcome(
+            p,
+            Err(StreamError::Io(std::io::Error::other("boom"))),
+            true,
+            "",
+        )
+        .unwrap_err();
+        assert!(
+            e.to_string().contains("reading ffmpeg output failed"),
+            "{e}"
+        );
+        // Non-zero exit → "ffmpeg failed" carrying the captured stderr.
+        let e = ffmpeg_outcome(p, Ok(vec![1.0]), false, "bad codec").unwrap_err();
+        let msg = e.to_string();
+        assert!(
+            msg.contains("ffmpeg failed") && msg.contains("bad codec"),
+            "{msg}"
+        );
+        // Success but empty → no audio.
+        let e = ffmpeg_outcome(p, Ok(vec![]), true, "").unwrap_err();
+        assert!(e.to_string().contains("no audio"), "{e}");
+        // Success with samples → passthrough.
+        assert_eq!(
+            ffmpeg_outcome(p, Ok(vec![0.5, -0.5]), true, "").unwrap(),
+            vec![0.5, -0.5]
+        );
+    }
+
+    #[test]
+    fn read_f32le_stream_empty_is_empty() {
+        let reader = ChunkedReader {
+            data: &[],
+            pos: 0,
+            chunk: 4,
+        };
+        assert!(read_f32le_stream(reader, 16).unwrap().is_empty());
+    }
+
+    #[test]
+    fn passes_plain_aac_lc() {
+        // AAC-LC, no SBR extension: 0x12 0x10 and 0x12 0x90 must not trip.
+        assert!(!is_he_aac_asc(&[0x12, 0x10]));
+        assert!(!is_he_aac_asc(&[0x12, 0x90]));
+        assert!(!is_he_aac_asc(&[]));
+    }
+}
