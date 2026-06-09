@@ -141,7 +141,7 @@ fn render_txt(transcript: &Transcript) -> String {
 fn render_srt(transcript: &Transcript) -> String {
     let mut out = String::new();
     for (index, segment) in sanitized(&transcript.segments).into_iter().enumerate() {
-        // Writing into a String is infallible; the trailing blank line ends the cue.
+        // Writing into a String is infallible.
         let _ = writeln!(
             out,
             "{}\n{} --> {}\n{}\n",

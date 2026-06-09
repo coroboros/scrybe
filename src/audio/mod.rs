@@ -40,15 +40,8 @@ pub fn load_audio(path: &Path, decoder: Decoder) -> Result<AudioPcm, ScrybeError
         // symphonia streams decode → downmix → resample to 16 kHz mono itself, so the
         // source is never fully resident.
         Decoder::Symphonia => decode::decode_file(path),
-        // ffmpeg already emits 16 kHz mono; carry its provenance through unchanged.
-        Decoder::Ffmpeg => {
-            let decoded = decode::decode_via_ffmpeg(path)?;
-            Ok(AudioPcm {
-                samples: decoded.samples,
-                source_sample_rate: decoded.sample_rate,
-                source_channels: decoded.channels,
-            })
-        }
+        // ffmpeg already emits 16 kHz mono.
+        Decoder::Ffmpeg => decode::decode_via_ffmpeg(path),
     }
 }
 

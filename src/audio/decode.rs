@@ -27,14 +27,6 @@ use crate::error::ScrybeError;
 /// ceiling still bounds real growth, and a smaller `max_samples` caps it below this.
 const STREAM_PRESIZE_SAMPLES: usize = 1024 * 1024;
 
-/// 16 kHz mono f32 PCM (from the ffmpeg path), plus the source stream's rate and
-/// channel count for provenance.
-pub struct Decoded {
-    pub samples: Vec<f32>,
-    pub sample_rate: u32,
-    pub channels: u16,
-}
-
 fn resample_error(path: &Path, error: ResampleError) -> ScrybeError {
     match error {
         ResampleError::Overflow => ScrybeError::unsupported_codec(
@@ -54,7 +46,9 @@ fn resample_error(path: &Path, error: ResampleError) -> ScrybeError {
 pub fn decode_file(path: &Path) -> Result<AudioPcm, ScrybeError> {
     let unsupported = |detail: String| ScrybeError::unsupported_codec(path, detail);
 
-    let file = std::fs::File::open(path).map_err(|e| unsupported(e.to_string()))?;
+    let file = std::fs::File::open(path).map_err(|e| ScrybeError::Io {
+        detail: e.to_string(),
+    })?;
     let mss = MediaSourceStream::new(Box::new(file), Default::default());
 
     let mut hint = Hint::new();
@@ -144,7 +138,9 @@ pub fn decode_file(path: &Path) -> Result<AudioPcm, ScrybeError> {
                 break;
             }
             Err(SymphoniaError::IoError(e)) => {
-                return Err(unsupported(format!("read error: {e}")));
+                return Err(ScrybeError::Io {
+                    detail: format!("read error: {e}"),
+                });
             }
             Err(e) => return Err(unsupported(format!("read error: {e}"))),
         }
@@ -204,14 +200,14 @@ fn read_f32le_stream<R: std::io::Read>(
 /// Decode by shelling out to a system `ffmpeg`, producing 16 kHz mono f32 PCM
 /// directly. The escape hatch for codecs symphonia cannot handle (e.g. HE-AAC). Caps
 /// the output at the same 16 kHz-mono ceiling as the symphonia path.
-pub fn decode_via_ffmpeg(path: &Path) -> Result<Decoded, ScrybeError> {
+pub fn decode_via_ffmpeg(path: &Path) -> Result<AudioPcm, ScrybeError> {
     decode_via_ffmpeg_capped(path, super::resample::MAX_OUTPUT_SAMPLES)
 }
 
 /// `decode_via_ffmpeg` with an injectable sample ceiling, so the overflow teardown
 /// (kill the child and stop reading *before* joining the stderr drain) is testable
 /// against a real subprocess in bounded time rather than only at the ~4.6-hour cap.
-fn decode_via_ffmpeg_capped(path: &Path, max_samples: usize) -> Result<Decoded, ScrybeError> {
+fn decode_via_ffmpeg_capped(path: &Path, max_samples: usize) -> Result<AudioPcm, ScrybeError> {
     let unsupported = |detail: String| ScrybeError::unsupported_codec(path, detail);
 
     // `-i` consumes its next argument literally (ffmpeg has no `--` end-of-options
@@ -277,10 +273,10 @@ fn decode_via_ffmpeg_capped(path: &Path, max_samples: usize) -> Result<Decoded, 
             .success(),
     };
     let samples = ffmpeg_outcome(path, decoded, success, &errs)?;
-    Ok(Decoded {
+    Ok(AudioPcm {
         samples,
-        sample_rate: TARGET_SAMPLE_RATE,
-        channels: 1,
+        source_sample_rate: TARGET_SAMPLE_RATE,
+        source_channels: 1,
     })
 }
 
@@ -506,8 +502,7 @@ mod tests {
             return;
         }
         let err = decode_via_ffmpeg_capped(Path::new("tests/fixtures/speech/en.wav"), 100)
-            .err()
-            .expect("oversized decode must fail, not hang or succeed");
+            .expect_err("oversized decode must fail, not hang or succeed");
         assert_eq!(err.exit_code(), 10);
         assert!(err.to_string().contains("too large"), "{err}");
     }
