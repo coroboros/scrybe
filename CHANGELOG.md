@@ -1,5 +1,11 @@
 # Changelog
 
+## v0.1.2 - 09/06/2026
+
+### Features
+- scrybe — offline Whisper transcription CLI
+
+
 ## v0.1.0 - 01/06/2026
 
 ### Features
