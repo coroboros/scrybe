@@ -1,0 +1,116 @@
+[package]
+name = "coroboros-scrybe"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.96"
+description = "Collapse sound into signal — a fast, offline Whisper transcription CLI."
+authors = ["Coroboros <ob@coroboros.com>"]
+license = "MIT"
+readme = "README.md"
+repository = "https://github.com/coroboros/scrybe"
+homepage = "https://github.com/coroboros/scrybe#readme"
+keywords = ["whisper", "transcription", "speech-to-text", "cli", "audio"]
+categories = ["command-line-utilities", "multimedia::audio"]
+# The `scrybe` crate id is taken on crates.io, so the package publishes as
+# `coroboros-scrybe`; the binary, the `@coroboros/scrybe` npm wrapper, and the
+# Homebrew formula all stay `scrybe` (see [package.metadata.dist] below).
+
+# The crate id is `coroboros-scrybe`, but the library keeps the `scrybe` name so
+# internal `use scrybe::…` imports and the binary stay unchanged.
+[lib]
+name = "scrybe"
+path = "src/lib.rs"
+
+[[bin]]
+name = "scrybe"
+path = "src/main.rs"
+
+[dependencies]
+anstream = "1.0.0"
+anstyle = "1.0.14"
+audioadapter-buffers = "3.0.0"
+clap = { version = "4.6.1", features = ["derive"] }
+ctrlc = "3.5.2"
+# `default-features = false` + the sync `ureq` backend keeps the async reqwest/hyper/
+# tokio stack out of the dependency tree entirely (`cargo tree -i reqwest` is empty);
+# rustls-tls avoids a system OpenSSL dependency, so the build stays self-contained.
+hf-hub = { version = "0.5.0", default-features = false, features = ["ureq", "rustls-tls"] }
+indicatif = "0.18.4"
+rayon = "1.12.0"
+rubato = "3.0.0"
+serde = { version = "1.0.228", features = ["derive"] }
+serde_json = "1.0.150"
+sha2 = "0.11.0"
+symphonia = { version = "0.6.0", features = ["mp3", "aac", "alac", "isomp4", "ogg", "vorbis", "flac", "wav", "pcm"] }
+sysinfo = "0.39.3"
+# Pinned exactly: a patch bump rebuilds the vendored whisper.cpp from source and
+# can shift transcription output or break the FFI build — unlike the pure-Rust deps,
+# which tolerate caret ranges.
+whisper-rs = "=0.16.0"
+
+[features]
+# CPU backend everywhere by default, so the crate builds with no GPU toolchain
+# (and CI needs none). GPU backends are opt-in; release builds add `metal` for
+# Apple Silicon, `cuda`/`vulkan` are build-from-source.
+default = []
+metal = ["whisper-rs/metal"]
+cuda = ["whisper-rs/cuda"]
+vulkan = ["whisper-rs/vulkan"]
+
+[dev-dependencies]
+assert_cmd = "2.2.2"
+predicates = "3.1.4"
+serde_json = "1.0.150"
+tempfile = "3.27.0"
+
+[lints.rust]
+unsafe_code = "forbid"
+
+# Every user-facing failure routes through the error enum, never a panic.
+[lints.clippy]
+unwrap_used = "deny"
+expect_used = "deny"
+panic = "deny"
+
+[profile.release]
+strip = true
+lto = "thin"
+
+# Cross-platform release automation, consumed by coroboros/ci's rust-packages
+# pipeline (it runs `dist plan`/`build` when this table is present). release-plz
+# and a consumer deny.toml are intentionally absent — the shared pipeline pins the
+# version, generates the CHANGELOG, cuts the release, and imposes the cargo-deny
+# policy centrally.
+#
+# Prebuilts ship the default CPU backend on every target; metal/cuda/vulkan stay
+# opt-in local builds (see README). Developer-ID signing + notarization await the
+# Apple Developer account and are wired here only once it exists.
+[package.metadata.dist]
+installers = ["shell", "powershell", "homebrew", "npm"]
+# Native runners (incl. aarch64 on ubuntu-*-arm) build every target — no cross toolchain.
+# musl deferred: whisper.cpp needs a musl C++ compiler the runner lacks; add once CI-proven.
+targets = [
+    "aarch64-apple-darwin",
+    "x86_64-apple-darwin",
+    "x86_64-unknown-linux-gnu",
+    "aarch64-unknown-linux-gnu",
+    "x86_64-pc-windows-msvc",
+]
+tap = "coroboros/homebrew-tap"
+# Decouple the user-facing names from the `coroboros-scrybe` crate id:
+# Homebrew `scrybe`, npm `@coroboros/scrybe`, binary `scrybe` (via [[bin]]).
+formula = "scrybe"
+npm-scope = "@coroboros"
+npm-package = "scrybe"
+install-path = "CARGO_HOME"
+
+[workspace]
+
+# cargo-dist 0.32 reads these workspace-global keys only here; in [package.metadata.dist]
+# they're ignored and `dist plan` panics. coroboros/ci detects dist via the table above.
+[workspace.metadata.dist]
+cargo-dist-version = "0.32.0"
+ci = "github"
+publish-jobs = ["homebrew", "npm"]
+# coroboros/ci owns the workflow; without this, `dist plan` demands its own release.yml.
+allow-dirty = ["ci"]
