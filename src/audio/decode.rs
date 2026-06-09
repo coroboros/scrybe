@@ -35,7 +35,6 @@ pub struct Decoded {
     pub channels: u16,
 }
 
-/// Map a streaming-resample failure to a coded, actionable decode error.
 fn resample_error(path: &Path, error: ResampleError) -> ScrybeError {
     match error {
         ResampleError::Overflow => ScrybeError::unsupported_codec(
@@ -105,8 +104,8 @@ pub fn decode_file(path: &Path) -> Result<AudioPcm, ScrybeError> {
         .map_err(|e| unsupported(format!("no decoder for this codec: {e}")))?;
 
     let mut resampler = Resampler16k::new(sample_rate).map_err(|e| resample_error(path, e))?;
-    let mut interleaved: Vec<f32> = Vec::new(); // reused per packet
-    let mut mono: Vec<f32> = Vec::new(); // reused per packet
+    let mut interleaved: Vec<f32> = Vec::new();
+    let mut mono: Vec<f32> = Vec::new();
     let mut decoded_any = false;
     loop {
         match format.next_packet() {
@@ -165,12 +164,9 @@ pub fn decode_file(path: &Path) -> Result<AudioPcm, ScrybeError> {
     })
 }
 
-/// Why streaming f32le decode stopped early.
 #[derive(Debug)]
 enum StreamError {
-    /// The running sample count exceeded the caller's ceiling.
     Overflow,
-    /// A read from the source failed.
     Io(std::io::Error),
 }
 
@@ -311,7 +307,7 @@ fn ffmpeg_outcome(
     }
 }
 
-/// Big-endian bit reader over the AudioSpecificConfig byte stream.
+/// Big-endian: ASC is MSB-first (ISO 14496-3).
 struct BitReader<'a> {
     data: &'a [u8],
     pos: usize,

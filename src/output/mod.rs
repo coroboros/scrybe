@@ -21,7 +21,6 @@ pub struct Meta<'a> {
     pub duration: f64,
 }
 
-/// Render a transcript to one format as a string.
 pub fn render(transcript: &Transcript, format: Format, meta: &Meta<'_>) -> String {
     match format {
         Format::Txt => render_txt(transcript),
@@ -120,7 +119,7 @@ pub fn first_collision(
     None
 }
 
-/// The output path for one format: `<stem>.<ext>` in `out_dir` or beside the input.
+/// `<stem>.<ext>` in `out_dir`, else beside the input.
 fn output_path(input: &Path, format: Format, out_dir: Option<&Path>) -> PathBuf {
     let stem = input.file_stem().unwrap_or(input.as_os_str());
     let dir = out_dir.or_else(|| input.parent()).unwrap_or(Path::new("."));
@@ -435,12 +434,9 @@ mod tests {
     fn detects_output_collisions() {
         let wav = PathBuf::from("/x/talk.wav");
         let m4a = PathBuf::from("/x/talk.m4a");
-        // Same stem, different container → both write talk.txt.
         assert!(first_collision(&[wav.clone(), m4a], &[Format::Txt], None).is_some());
-        // Distinct stems → no collision.
         let other = PathBuf::from("/x/other.wav");
         assert!(first_collision(&[wav, other], &[Format::Txt], None).is_none());
-        // --out-dir flattening equal-stem files from different folders.
         let ep1 = PathBuf::from("/ep01/audio.mp3");
         let ep2 = PathBuf::from("/ep02/audio.mp3");
         assert!(first_collision(&[ep1, ep2], &[Format::Json], Some(Path::new("/out"))).is_some());
@@ -501,12 +497,10 @@ mod tests {
             output_path(input, Format::Json, Some(Path::new("/out"))),
             PathBuf::from("/out/clip.json"),
         );
-        // Same stem, different formats → different files.
         assert_ne!(
             output_path(input, Format::Srt, None),
             output_path(input, Format::Vtt, None),
         );
-        // A no-extension input keeps its whole name as the stem.
         assert_eq!(
             output_path(Path::new("/a/clip"), Format::Tsv, None),
             PathBuf::from("/a/clip.tsv")
@@ -521,7 +515,6 @@ mod tests {
         std::fs::write(&input, b"x").unwrap();
         let formats = [Format::Txt];
 
-        // No output yet → stale.
         assert!(!outputs_up_to_date(&input, &formats, None));
 
         let out = output_path(&input, Format::Txt, None);
@@ -535,15 +528,13 @@ mod tests {
                 .unwrap();
         };
 
-        // Output older than input → stale.
         touch(&out, SystemTime::now() - Duration::from_secs(60));
         assert!(!outputs_up_to_date(&input, &formats, None));
 
-        // Output newer than input → up to date.
         touch(&out, SystemTime::now() + Duration::from_secs(60));
         assert!(outputs_up_to_date(&input, &formats, None));
 
-        // A nonexistent input has no metadata → stale (never skip).
+        // Missing input → stale, never skip.
         assert!(!outputs_up_to_date(
             Path::new("/no/such/input.wav"),
             &formats,
@@ -560,10 +551,8 @@ mod tests {
         std::fs::write(&input, b"x").unwrap();
         let formats = [Format::Txt];
 
-        // No output in the out-dir → stale.
         assert!(!outputs_up_to_date(&input, &formats, Some(out_dir.path())));
 
-        // Present in the out-dir and newer than the input → up to date.
         let out = output_path(&input, Format::Txt, Some(out_dir.path()));
         std::fs::write(&out, b"y").unwrap();
         std::fs::File::options()

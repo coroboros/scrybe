@@ -24,7 +24,7 @@ use crate::{audio, output};
 /// Fallback parallelism when the platform cannot report it.
 const DEFAULT_PARALLELISM: usize = 4;
 
-/// The machine's usable parallelism, or a sane default. Always >= 1.
+/// The machine's usable parallelism, or `DEFAULT_PARALLELISM`. Always >= 1.
 pub fn detected_parallelism() -> usize {
     std::thread::available_parallelism().map_or(DEFAULT_PARALLELISM, |n| n.get())
 }
@@ -93,8 +93,7 @@ pub fn resolve_jobs(
     }
 }
 
-/// Whether a file can be skipped: not forced and every requested output already
-/// exists and is at least as new as the input.
+/// Skippable when not forced and every requested output is up to date.
 fn decide_skip(
     file: &std::path::Path,
     force: bool,
@@ -258,9 +257,8 @@ fn drive_pipeline<M: Send>(
     Ok(())
 }
 
-/// Decide the run's exit result from the per-file outcomes: partial failure when
-/// any file failed, a distinct interrupted result when Ctrl-C stopped the run
-/// before every file ran, otherwise success.
+/// The run's exit result, with a distinct Interrupted error when Ctrl-C stopped
+/// the run before every file ran.
 fn batch_exit_code(
     results: &[Option<FileResult>],
     interrupted: bool,
@@ -410,9 +408,8 @@ mod tests {
     #[test]
     fn auto_cpu_jobs_clamps_to_what_ram_allows() {
         const GB: u64 = 1024 * 1024 * 1024;
-        // Half of 16 cores is 8, but 8 GiB can't reserve 8 decode buffers — clamp.
+        // 8 GiB can't reserve 8 decode buffers, so the heuristic clamps below half-cores.
         assert!(auto_cpu_jobs(16, Some(8 * GB)) < cpu_default_jobs(16));
-        // No RAM reading → unclamped heuristic.
         assert_eq!(auto_cpu_jobs(16, None), cpu_default_jobs(16));
     }
 
@@ -436,8 +433,6 @@ mod tests {
 
     #[test]
     fn realtime_factor_formats_and_guards_zero_wall() {
-        // Pure ×RT helper: None when no wall time has elapsed (no divide-by-zero),
-        // otherwise audio/wall to one decimal. Shared by the live bar and the summary.
         assert!(realtime_factor(10.0, 0.0).is_none());
         assert_eq!(realtime_factor(20.0, 10.0).as_deref(), Some("2.0×RT"));
     }
@@ -458,10 +453,8 @@ mod tests {
         let formats = [Format::Txt];
         let out = dir.path().join("clip.txt");
 
-        // No output yet → not skipped.
         assert!(!decide_skip(&input, false, &formats, Some(dir.path())));
 
-        // Output present and newer than the input → skipped.
         std::fs::write(&out, b"y").unwrap();
         std::fs::File::options()
             .write(true)
@@ -471,7 +464,6 @@ mod tests {
             .unwrap();
         assert!(decide_skip(&input, false, &formats, Some(dir.path())));
 
-        // ...unless --force, which always reprocesses.
         assert!(!decide_skip(&input, true, &formats, Some(dir.path())));
     }
 
@@ -564,7 +556,7 @@ mod tests {
                 &drive_flag,
                 |index| index,
                 |_index, _item| {
-                    // Slow consumer so producers race ahead and park on the full channel.
+                    // Slow consumer so producers park on the full channel before the interrupt.
                     drive_consumed.fetch_add(1, Ordering::SeqCst);
                     std::thread::sleep(Duration::from_millis(5));
                 },

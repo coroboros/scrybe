@@ -12,7 +12,6 @@ use rubato::{Fft, FixedSync, Indexing, Resampler};
 
 use super::TARGET_SAMPLE_RATE;
 
-/// Bytes per f32 sample.
 const F32_BYTES: u64 = 4;
 
 /// Ceiling on resampled 16 kHz-mono output, in samples — the only large per-job
@@ -33,12 +32,9 @@ const CHANNELS: usize = 1;
 /// bounding the streaming window to a small multiple of the chunk size.
 const COMPACT_AFTER_CHUNKS: usize = 64;
 
-/// Why a streaming resample stopped.
 #[derive(Debug)]
 pub enum ResampleError {
-    /// The 16 kHz output passed the in-memory ceiling.
     Overflow,
-    /// rubato construction or processing failed.
     Failed(String),
 }
 
@@ -60,7 +56,6 @@ pub struct Resampler16k {
 }
 
 impl Resampler16k {
-    /// A resampler from `src_rate` to 16 kHz, bounding the output at the per-job budget.
     pub fn new(src_rate: u32) -> Result<Self, ResampleError> {
         Self::with_ceiling(src_rate, MAX_OUTPUT_SAMPLES)
     }
@@ -114,10 +109,8 @@ impl Resampler16k {
         }
     }
 
-    /// Push a block of source-rate mono samples, draining every full chunk it completes.
     pub fn push(&mut self, mono: &[f32]) -> Result<(), ResampleError> {
         if self.inner.is_none() {
-            // Already 16 kHz: the pushed mono is the output.
             self.out.extend_from_slice(mono);
             return self.check_ceiling();
         }
@@ -134,9 +127,8 @@ impl Resampler16k {
         Ok(())
     }
 
-    /// Flush the partial tail and the filter delay, returning the 16 kHz output. Mirrors
-    /// rubato's `process_all_into_buffer`: process the final partial chunk, pump silence
-    /// until the expected length is reached, trim the leading delay, clamp to length.
+    /// Flush the filter tail and return the 16 kHz output. Mirrors rubato's
+    /// `process_all_into_buffer` — the body must track its delay/trim semantics.
     pub fn finish(mut self) -> Result<Vec<f32>, ResampleError> {
         if self.inner.is_none() {
             return Ok(self.out);
@@ -210,8 +202,7 @@ mod tests {
     #![allow(clippy::unwrap_used, clippy::expect_used)]
     use super::*;
 
-    /// One-shot helper: push the whole buffer and finish. Drives the streaming path the
-    /// decoder uses, so these resampling-correctness tests double as streaming coverage.
+    /// Drives the same streaming path the decoder uses, so correctness tests double as streaming coverage.
     fn resample(mono: Vec<f32>, src_rate: u32) -> Result<Vec<f32>, ResampleError> {
         let mut r = Resampler16k::new(src_rate)?;
         r.push(&mono)?;

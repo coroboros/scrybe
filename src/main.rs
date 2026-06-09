@@ -1,5 +1,4 @@
-//! scrybe entry point: parse the CLI, set up color, dispatch, and translate any
-//! failure into its stable exit code.
+//! scrybe entry point: dispatch, mapping every failure to its stable exit code.
 
 use clap::{Parser, ValueEnum};
 
@@ -7,14 +6,13 @@ use scrybe::cli::{self, Cli, Command, Model, ModelsAction, SkillsAction, Task};
 use scrybe::error::ScrybeError;
 use scrybe::{audio, batch, color, engine, model, output, skills};
 
-/// Exit code for argument/usage problems, matching clap's own convention.
+/// Argument/usage exit code; must match clap's own (it exits 2 on parse errors).
 const USAGE_ERROR: i32 = 2;
 
 fn main() {
     std::process::exit(run());
 }
 
-/// Parse, configure color, dispatch. Returns the process exit code.
 fn run() -> i32 {
     let cli = Cli::parse();
     color::init(cli.no_color);
@@ -114,8 +112,6 @@ fn transcribe(cli: &Cli) -> Result<i32, ScrybeError> {
     let vad_path = model::ensure_vad()?;
     let engine = engine::Engine::load(&model_path, Some(&vad_path))?;
 
-    // Inference runs one file at a time, so the active job gets every core;
-    // `--jobs` only widens the decode-ahead pool, never the inference threads.
     let threads = cli.threads.unwrap_or_else(batch::detected_parallelism);
     let options = engine::TranscribeOptions {
         language: cli.lang.clone(),
@@ -253,8 +249,7 @@ fn list_models() {
     }
 }
 
-/// Dispatch `scrybe skills`. Returns the process exit code: `0` on success, or the
-/// usage code when `get` is asked for a skill the binary does not bundle.
+/// Returns the usage code when `get` names a skill the binary does not bundle.
 fn run_skills(action: &SkillsAction) -> i32 {
     match action {
         SkillsAction::List => {
