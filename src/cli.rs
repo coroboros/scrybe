@@ -108,7 +108,6 @@ impl Cli {
     }
 }
 
-/// Top-level subcommands.
 #[derive(Debug, Subcommand)]
 pub enum Command {
     /// Manage Whisper models on disk.
@@ -136,7 +135,6 @@ pub enum SkillsAction {
     },
 }
 
-/// Actions under `scrybe models`.
 #[derive(Debug, Subcommand)]
 pub enum ModelsAction {
     /// List the known Whisper models, sizes, and which are cached.
@@ -221,7 +219,6 @@ mod tests {
     fn effective_formats_dedups_preserving_order() {
         let cli = Cli::try_parse_from(["scrybe", "--format", "txt,srt,txt", "x.wav"]).unwrap();
         assert_eq!(cli.effective_formats(), vec![Format::Txt, Format::Srt]);
-        // --json overrides --format entirely.
         let json = Cli::try_parse_from(["scrybe", "--json", "--format", "srt", "x.wav"]).unwrap();
         assert_eq!(json.effective_formats(), vec![Format::Json]);
     }

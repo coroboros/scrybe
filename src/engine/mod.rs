@@ -16,11 +16,9 @@ use whisper_rs::{FullParams, SamplingStrategy, WhisperContext, WhisperContextPar
 
 use crate::error::ScrybeError;
 
-/// Segments with a no-speech probability above this are treated as silence and
-/// dropped from the transcript.
+/// No-speech probability above this drops the segment as silence.
 const NO_SPEECH_DROP: f32 = 0.6;
 
-/// The compiled inference backend.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Backend {
     Cpu,
@@ -54,7 +52,6 @@ pub const fn active_backend() -> Backend {
     }
 }
 
-/// One transcript segment with its timing.
 #[derive(Debug, Clone)]
 pub struct Segment {
     pub start: f64,
@@ -65,7 +62,6 @@ pub struct Segment {
     pub words: Vec<Word>,
 }
 
-/// A timed word, built from one or more whisper tokens.
 #[derive(Debug, Clone)]
 pub struct Word {
     pub start: f64,
@@ -82,18 +78,16 @@ pub struct Transcript {
 
 /// How to run one transcription.
 pub struct TranscribeOptions {
-    /// Source language code, or `None` to auto-detect.
     pub language: Option<String>,
     /// Translate to English instead of transcribing in the source language.
     pub translate: bool,
-    /// CPU threads for decoding.
     pub threads: usize,
     /// Emit per-word timing (enables whisper token timestamps). Set for JSON output;
     /// off otherwise, since the other formats carry only segment-level timing.
     pub word_timestamps: bool,
 }
 
-/// A loaded model, reusable across files, plus the optional VAD model.
+/// A loaded model, reusable across files.
 pub struct Engine {
     ctx: WhisperContext,
     vad_model_path: Option<PathBuf>,
@@ -118,8 +112,7 @@ impl Engine {
         })
     }
 
-    /// Transcribe 16 kHz mono f32 PCM. whisper.cpp handles long-audio windowing
-    /// internally; quality gating and no-speech filtering happen here.
+    /// Transcribe 16 kHz mono f32 PCM.
     pub fn transcribe(
         &self,
         pcm: &[f32],
@@ -159,10 +152,8 @@ impl Engine {
         params.set_print_special(false);
         params.set_print_timestamps(false);
 
-        // Voice-activity segmentation when the Silero model is present — the
-        // mandated correctness floor; the no-speech filter below stays as a
-        // second layer. enable_vad panics unless a path is set first, so it is
-        // gated on a valid path.
+        // VAD is the first silence layer (no-speech filter_segments is the second).
+        // enable_vad panics unless a path is set first, so gate on a valid path.
         if let Some(vad) = self.vad_model_path.as_deref().and_then(Path::to_str) {
             params.set_vad_model_path(Some(vad));
             params.enable_vad(true);
