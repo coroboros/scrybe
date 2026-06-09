@@ -1,0 +1,69 @@
+//! Shared helpers for the integration test crates. Lives in a subdirectory so
+//! Cargo does not compile it as its own test binary.
+#![allow(dead_code)] // each test binary uses a subset
+#![allow(clippy::unwrap_used, clippy::expect_used)]
+
+use assert_cmd::Command;
+
+/// A binary invocation with ambient color env neutralized, so a test only sees
+/// the color signal it sets itself.
+pub fn scrybe() -> Command {
+    let mut cmd = Command::cargo_bin("scrybe").expect("scrybe binary builds");
+    cmd.env_remove("NO_COLOR")
+        .env_remove("CLICOLOR")
+        .env_remove("CLICOLOR_FORCE");
+    cmd
+}
+
+/// The cached tiny-model path, or `None` when it is absent. Transcription tests
+/// skip cleanly when missing (CI fetches it once); shared so every gate — bool or
+/// path — uses one lookup and one convention.
+pub fn tiny_model_path() -> Option<std::path::PathBuf> {
+    scrybe::model::cached_path(scrybe::cli::Model::Tiny)
+}
+
+/// Whether the tiny model is cached.
+pub fn tiny_cached() -> bool {
+    tiny_model_path().is_some()
+}
+
+/// Whether a usable `ffmpeg` is on PATH; ffmpeg-path tests skip cleanly otherwise.
+pub fn ffmpeg_available() -> bool {
+    std::process::Command::new("ffmpeg")
+        .arg("-version")
+        .output()
+        .is_ok_and(|o| o.status.success())
+}
+
+/// The cached tiny-model path, or `None` to skip — but a hard failure when the
+/// environment is expected to have pre-fetched it (`SCRYBE_REQUIRE_MODEL` set, as CI
+/// does). An early `return` on a bare `tiny_cached()` makes a model-gated test *pass*
+/// while exercising nothing; this turns that silent green into a loud failure where a
+/// model is guaranteed, while still skipping cleanly on an offline developer machine.
+/// The skip message lives here once, so every gate shares one shape.
+pub fn require_model_or_skip() -> Option<std::path::PathBuf> {
+    if let Some(path) = tiny_model_path() {
+        return Some(path);
+    }
+    assert!(
+        std::env::var_os("SCRYBE_REQUIRE_MODEL").is_none(),
+        "tiny model required (SCRYBE_REQUIRE_MODEL is set) but not cached — run `scrybe models pull tiny`",
+    );
+    eprintln!("skipping: tiny model not cached — run `scrybe models pull tiny`");
+    None
+}
+
+/// Like [`require_model_or_skip`] for `ffmpeg`: a clean skip when it is absent, but a
+/// hard failure under `SCRYBE_REQUIRE_FFMPEG` (CI installs ffmpeg), so the ffmpeg
+/// decode path can never silently no-op where it is guaranteed present.
+pub fn require_ffmpeg_or_skip() -> bool {
+    if ffmpeg_available() {
+        return true;
+    }
+    assert!(
+        std::env::var_os("SCRYBE_REQUIRE_FFMPEG").is_none(),
+        "ffmpeg required (SCRYBE_REQUIRE_FFMPEG is set) but not on PATH",
+    );
+    eprintln!("skipping: ffmpeg not on PATH");
+    false
+}
