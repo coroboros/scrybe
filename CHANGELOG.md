@@ -1,5 +1,15 @@
 # Changelog
 
+## v0.1.3 - 09/06/2026
+
+### Refactor
+- production-grade cleanup pass (comments, I/O exit code, dead type)
+- single-source the VAD filename, drop WHAT-narration comments
+
+### Documentation
+- `changelog` — consolidate the 0.1.x notes under 0.1.2 (#4)
+
+
 ## v0.1.2 - 09/06/2026
 
 ### Features
