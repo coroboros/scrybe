@@ -19,7 +19,14 @@ use crate::error::ScrybeError;
 /// The Silero VAD model (whisper.cpp voice-activity segmentation), fetched into
 /// the same HF cache as the Whisper weights.
 const VAD_REPO: &str = "ggml-org/whisper-vad";
-const VAD_FILE: &str = "ggml-silero-v5.1.2.bin";
+// The VAD filename feeds both the cache lookup and the bundled-bytes include path;
+// a macro single-sources it because concat!/include_bytes! take a literal, not a const.
+macro_rules! vad_file {
+    () => {
+        "ggml-silero-v5.1.2.bin"
+    };
+}
+const VAD_FILE: &str = vad_file!();
 const VAD_SHA256: &str = "29940d98d42b91fbd05ce489f3ecf7c72f0a42f027e4875919a28fb4c04ea2cf";
 
 /// Static metadata for one model: where to fetch it and what it can do.
@@ -245,10 +252,8 @@ pub fn ensure_available(model: Model, offline: bool) -> Result<PathBuf, ScrybeEr
 
 /// The Silero VAD model, bundled in the binary so the mandated correctness floor
 /// is always available — no network, works on a first offline run.
-const SILERO_VAD_BYTES: &[u8] = include_bytes!(concat!(
-    env!("CARGO_MANIFEST_DIR"),
-    "/assets/ggml-silero-v5.1.2.bin"
-));
+const SILERO_VAD_BYTES: &[u8] =
+    include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/assets/", vad_file!()));
 
 /// Ensure the Silero VAD model is on disk, returning its path. Prefers a cached
 /// copy (HF cache, or a prior materialization); otherwise writes the bundled,

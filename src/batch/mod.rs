@@ -169,13 +169,11 @@ pub fn run(engine: &Engine, files: &[PathBuf], cfg: &Config<'_>) -> Result<i32, 
 
     let mut results: Vec<Option<FileResult>> = (0..files.len()).map(|_| None).collect();
 
-    // Decode in parallel, feed a single serial inference stage. The index identifies
-    // the file, so no path is cloned through the channel.
+    // Pass the file index, not the path, through the channel — nothing is cloned.
     drive_pipeline(
         files.len(),
         cfg.jobs,
         &interrupted,
-        // Producer: decode, or skip an input whose outputs are already current.
         |index| {
             let file = &files[index];
             if decide_skip(file, cfg.force, cfg.formats, cfg.out_dir) {
@@ -187,7 +185,6 @@ pub fn run(engine: &Engine, files: &[PathBuf], cfg: &Config<'_>) -> Result<i32, 
                 }
             }
         },
-        // Consumer: serial inference + write.
         |index, decoded| {
             let file = &files[index];
             let name = file.file_name().map_or_else(
@@ -300,7 +297,6 @@ fn transcribe_one(
         DecodeMsg::Failed(e) => return (0.0, Outcome::Failed(e.to_string())),
     };
     let duration = pcm.duration_secs();
-    // Drive the per-file bar from whisper's progress callback, with live ×RT.
     let progress_bar = bar.clone();
     let started = Instant::now();
     let on_progress = move |percent: i32| {
