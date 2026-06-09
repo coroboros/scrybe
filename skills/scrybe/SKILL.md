@@ -1,6 +1,6 @@
 ---
 name: scrybe
-description: Transcribe speech to text offline with scrybe — a fast, self-contained Whisper CLI (no Python, no system ffmpeg). Reads common audio (wav, mp3, flac, ogg) and mp4/m4a files, one at a time or a whole folder, writes txt, srt, vtt, json, tsv, or csv, and can translate foreign-language speech to English in the same pass. Use whenever someone wants a transcript, subtitles, captions, or speech-to-text from a local recording, audio file, or video. Triggers on "transcribe this", "pull the text out of this", "get subtitles for this video", "speech to text", "caption this recording", "what's said in this audio".
+description: Transcribes speech to text offline with scrybe — a fast, self-contained Whisper CLI (no Python, no system ffmpeg). Reads common audio (wav, mp3, flac, ogg) and mp4/m4a files, one file or a whole folder, and writes txt, srt, vtt, json, tsv, or csv; it also translates foreign-language speech to English in one pass. Use when someone wants a transcript, subtitles, captions, or speech-to-text from a local recording, audio file, or video — phrasings like "transcribe this", "pull the text out of this recording", "get subtitles for this video", "speech to text", "caption this audio", or "what's said in this clip".
 ---
 
 # scrybe
@@ -19,7 +19,7 @@ that matches the toolchain already on the machine, then continue:
 ```sh
 brew install coroboros/tap/scrybe   # macOS — preferred
 npx @coroboros/scrybe               # Node toolchains
-cargo binstall scrybe               # prebuilt binary via cargo
+cargo binstall coroboros-scrybe     # prebuilt binary via cargo
 ```
 
 Building from source needs a C/C++ toolchain and CMake (whisper.cpp is compiled by
