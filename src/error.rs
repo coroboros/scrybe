@@ -1,11 +1,9 @@
-//! Structured failure taxonomy with stable, documented exit codes.
+//! Structured failure taxonomy with stable exit codes.
 //!
-//! Every runtime failure is one [`ScrybeError`] rendered as a single actionable
-//! line, and each variant maps to a fixed exit code so callers can branch on
-//! `$?`. Argument errors (bad flags, unknown values) are owned by `clap`, and
-//! configuration/usage errors (unknown model capability, output collision, no
-//! input paths) are deliberately clap-aligned: they print their own line and
-//! exit `2` outside this enum rather than inventing a code per case.
+//! Each runtime failure is one [`ScrybeError`], rendered as a single actionable line
+//! and mapped to a fixed exit code (branchable on `$?`). `clap` owns argument errors;
+//! usage errors (model capability, output collision, no input paths) deliberately exit
+//! `2` outside this enum rather than minting a code each.
 
 use std::fmt;
 use std::path::{Path, PathBuf};
@@ -57,8 +55,7 @@ impl ScrybeError {
             Self::FileNotFound { .. } => 14,
             Self::ModelLoadFailed { .. } => 15,
             Self::TranscriptionFailed { .. } => 16,
-            // Shared "batch incomplete" bucket: some files failed, or Ctrl-C stopped
-            // the run early. Both are distinguished by their message, not the code.
+            // Both share the "batch incomplete" code; the message distinguishes them.
             Self::PartialBatchFailure { .. } | Self::Interrupted { .. } => 20,
             Self::Io { .. } => 1,
         }

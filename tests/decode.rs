@@ -77,10 +77,8 @@ fn wav_header(data_size: u32) -> Vec<u8> {
 #[test]
 fn crafted_declared_length_does_not_preallocate() {
     // A header declaring ~350M frames with no data body. The streaming decoder never
-    // pre-allocates from the declared length (the source is resampled packet by packet,
-    // never fully resident), so a crafted huge length cannot force a multi-GB alloc; the
-    // header-only file simply yields no audio and fails loud with exit 10 — promptly,
-    // not after an OOM.
+    // pre-allocates from the declared length, so a crafted huge length can't force a
+    // multi-GB alloc; the header-only file yields no audio and fails loud (exit 10).
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("huge.wav");
     std::fs::write(&path, wav_header(700_000_000)).unwrap();

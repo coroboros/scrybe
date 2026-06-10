@@ -66,18 +66,11 @@ pub fn outputs_up_to_date(input: &Path, formats: &[Format], out_dir: Option<&Pat
     })
 }
 
-/// Find two distinct inputs that would write the same output file (e.g. `a.wav`
-/// and `a.m4a` → `a.txt`, or `--out-dir` flattening equal-stem files from
-/// different folders). Returns an actionable message for the first collision, or
-/// `None` when every output is unique — so the caller can fail loud rather than
-/// silently overwrite.
-///
-/// Keyed by the case-folded output path: exact duplicates collide on every
-/// filesystem, while paths differing only in case (`Audio.txt` vs `audio.txt`)
-/// collide on a case-insensitive one — macOS and the Windows default, the primary
-/// targets. Both silently overwrite, so both fail loud here. The fold is an ASCII
-/// lowercasing, a close approximation of those filesystems' case rules; the cost of
-/// being wrong is a fail-loud refusal with a fix, never a lost transcript.
+/// Find two distinct inputs that would write the same output file, returning an
+/// actionable message for the first collision (else `None`) so the caller fails loud
+/// rather than silently overwriting. Keyed by case-folded path: paths differing only
+/// in case (`Audio.txt` vs `audio.txt`) collide on macOS/Windows. The ASCII fold
+/// approximates their case rules; being wrong only over-refuses, never loses a transcript.
 pub fn first_collision(
     inputs: &[PathBuf],
     formats: &[Format],

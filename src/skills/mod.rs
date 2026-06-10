@@ -1,10 +1,8 @@
-//! The agent skills bundled with the binary.
+//! Agent skills bundled in the binary.
 //!
-//! Each skill is authored once under `skills/<name>/SKILL.md` — the layout that
-//! `npx skills add coroboros/scrybe` resolves from the repo — and embedded here at
-//! compile time with [`include_str!`], so the binary and the installable skill can
-//! never drift. `scrybe skills get` prints a body; `scrybe skills list` enumerates
-//! the set.
+//! Each is authored once under `skills/<name>/SKILL.md` (what `npx skills add
+//! coroboros/scrybe` installs) and embedded via `include_str!`, so the binary and the
+//! installable skill can't drift.
 
 /// A bundled agent skill: its name, a one-line summary for `skills list`, and the
 /// full SKILL.md body printed verbatim by `skills get`.

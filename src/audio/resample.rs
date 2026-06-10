@@ -1,11 +1,9 @@
 //! Stream mono f32 PCM to 16 kHz with rubato's FFT synchronous resampler.
 //!
-//! The decoder pushes source-rate mono as packets arrive; only the 16 kHz output
-//! accumulates, so the full-resolution source is never resident. The output is
-//! bounded by a ceiling (derived from the per-job memory budget); beyond it the
-//! decode fails loud, with `--decoder ffmpeg` as the alternative for a multi-hour
-//! clip. A source already at 16 kHz is a passthrough — no resampler, no copy beyond
-//! the accumulating buffer.
+//! The decoder pushes source-rate mono per packet; only the 16 kHz output
+//! accumulates, never the full source. Output is capped (from the per-job memory
+//! budget); past it the decode fails loud, with `--decoder ffmpeg` for multi-hour
+//! clips. A 16 kHz source is a passthrough.
 
 use audioadapter_buffers::direct::InterleavedSlice;
 use rubato::{Fft, FixedSync, Indexing, Resampler};
@@ -14,16 +12,14 @@ use super::TARGET_SAMPLE_RATE;
 
 const F32_BYTES: u64 = 4;
 
-/// Ceiling on resampled 16 kHz-mono output, in samples — the only large per-job
-/// allocation now that decode streams. Derived from `model::DECODE_BUFFER` (the
-/// per-job memory reservation) so the resident output cannot exceed what the guard
-/// reserved. ~4.6 hours of 16 kHz mono.
+/// Ceiling on resampled 16 kHz-mono output — the only large per-job allocation now
+/// that decode streams. Derived from `model::DECODE_BUFFER` so the resident output
+/// can't exceed what the guard reserved. ~4.6 h of 16 kHz mono.
 pub(crate) const MAX_OUTPUT_SAMPLES: usize = (crate::model::DECODE_BUFFER / F32_BYTES) as usize;
 
-// rubato FFT block-size tuning: ~1024-frame chunks split into 2 sub-chunks trade
-// latency for throughput sensibly for whole-file offline resampling. Mono input,
-// fixed input size so each call consumes a constant chunk and produces variable
-// output — the natural shape for streaming.
+// rubato FFT block-size tuning: 1024-frame chunks in 2 sub-chunks trade latency for
+// throughput, fine for whole-file offline work. Fixed input size so each call
+// consumes a constant chunk — the natural shape for streaming.
 const FFT_CHUNK: usize = 1024;
 const FFT_SUB_CHUNKS: usize = 2;
 const CHANNELS: usize = 1;

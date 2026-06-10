@@ -1,11 +1,7 @@
-//! scrybe library: the reusable pieces behind the CLI — audio ingest, the model
-//! registry and cache, and the whisper.cpp engine. The binary in `main.rs` wires
-//! these together; tests drive them directly.
-//!
-//! This surface exists for the `scrybe` binary and its test suite, not as a stable
-//! public API: items are `pub` so the integration tests can reach them, and some
-//! carry process-global or destructive effects (`color::init`, `model::evict`).
-//! Treat it as unstable and exempt from semver until a curated facade is defined.
+//! Internals behind the `scrybe` binary, exposed for its test suite — not a stable
+//! API. Items are `pub` only so integration tests can reach them; some carry
+//! process-global or destructive effects (`color::init`, `model::evict`). Treat as
+//! unstable, exempt from semver.
 
 pub mod audio;
 pub mod batch;

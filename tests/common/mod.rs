@@ -35,12 +35,10 @@ pub fn ffmpeg_available() -> bool {
         .is_ok_and(|o| o.status.success())
 }
 
-/// The cached tiny-model path, or `None` to skip — but a hard failure when the
-/// environment is expected to have pre-fetched it (`SCRYBE_REQUIRE_MODEL` set, as CI
-/// does). An early `return` on a bare `tiny_cached()` makes a model-gated test *pass*
-/// while exercising nothing; this turns that silent green into a loud failure where a
-/// model is guaranteed, while still skipping cleanly on an offline developer machine.
-/// The skip message lives here once, so every gate shares one shape.
+/// The cached tiny-model path, or `None` to skip — but a hard failure under
+/// `SCRYBE_REQUIRE_MODEL` (CI sets it), so a model-gated test can't silently pass while
+/// exercising nothing where a model is guaranteed, yet still skips cleanly offline. The
+/// skip message lives here once.
 pub fn require_model_or_skip() -> Option<std::path::PathBuf> {
     if let Some(path) = tiny_model_path() {
         return Some(path);
