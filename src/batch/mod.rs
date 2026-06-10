@@ -1,10 +1,8 @@
 //! Parallel batch orchestration and the run summary.
 //!
-//! Files are decoded in parallel on a bounded worker pool and fed through a
-//! bounded channel into a single serial inference stage, so the (GPU) engine is
-//! never starved while CPU decode runs ahead. Up-to-date outputs are skipped,
-//! Ctrl-C stops gracefully after the in-flight file, and a colored table
-//! summarizes the run.
+//! Files decode in parallel on a bounded pool and feed a single serial inference
+//! stage over a bounded channel, so the (GPU) engine is never starved by CPU decode.
+//! Up-to-date outputs are skipped; Ctrl-C stops gracefully after the in-flight file.
 
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -159,7 +157,6 @@ fn interrupt_flag() -> &'static Arc<AtomicBool> {
 /// a shared flag, reset at the start of each run, so every run observes Ctrl-C.
 pub fn run(engine: &Engine, files: &[PathBuf], cfg: &Config<'_>) -> Result<i32, ScrybeError> {
     let interrupted = Arc::clone(interrupt_flag());
-    // Clear any interrupt left from a prior run so this one starts live.
     interrupted.store(false, Ordering::SeqCst);
 
     let multi = MultiProgress::new();

@@ -1,11 +1,9 @@
 //! Model-management acceptance tests — the model contract (network-free subset).
 //!
 //! Covered here, no network: the memory guard, translation gating, the offline
-//! cache-hit/miss/corrupt branches, the SHA gate, and the re-download retry *state
-//! machine* (`fetch_with_retry`, unit-tested in `model`). What stays manual against
-//! the live hub — because an online `get` revalidates over the network: the first
-//! download + progress bar, resumable transfer (opaque hf-hub internals), and the
-//! live re-download leg of corrupt-cache recovery.
+//! cache-hit/miss/corrupt branches, and the SHA gate. Left manual against the live hub
+//! (an online `get` revalidates over the network): first download + progress bar,
+//! resumable transfer, and the live re-download leg of corrupt-cache recovery.
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
 use predicates::prelude::*;

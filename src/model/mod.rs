@@ -1,9 +1,8 @@
 //! Whisper model registry, cache, and the memory guard (85% of detected RAM).
 //!
 //! Models are ggml weights from the whisper.cpp HuggingFace repos, fetched via
-//! `hf-hub` into the standard HF cache with a progress bar and resumable
-//! transfer, then verified against a pinned SHA-256. `--offline` uses the cache
-//! only.
+//! `hf-hub` into the standard HF cache (resumable, progress bar) and verified against
+//! a pinned SHA-256. `--offline` uses the cache only.
 
 use std::fmt::Write as _;
 use std::io::Read;
@@ -97,37 +96,27 @@ pub fn info(model: Model) -> ModelInfo {
     }
 }
 
-/// Per-job decode-memory budget, and the single source of truth for the decode
-/// ceiling: it is BOTH the amount `guard_memory` reserves per job AND the hard
-/// per-file ceiling on the 16 kHz-mono output (`audio::resample::MAX_OUTPUT_SAMPLES`
-/// derives from it, so the two cannot desync). Decode streams — each packet is
-/// downmixed and resampled as it arrives — so the full-resolution source is never
-/// resident; the only large per-job buffer is the 16 kHz output, bounded here. The
-/// batch pool runs at most `jobs` decodes at once, so resident decode memory tracks
-/// `DECODE_BUFFER * jobs`. A clip whose 16 kHz output would exceed this (~4.6 hours)
-/// fails loud, with `--decoder ffmpeg` as the alternative.
+/// Per-job decode-memory budget — and single source for the decode ceiling: both what
+/// `guard_memory` reserves per job and the hard per-file cap on 16 kHz-mono output
+/// (`resample::MAX_OUTPUT_SAMPLES` derives from it, so the two can't desync). Decode
+/// streams, so only this bounded output is resident, not the source; a clip past it
+/// (~4.6 h) fails loud, with `--decoder ffmpeg` as the alternative.
 pub(crate) const DECODE_BUFFER: u64 = 1024 * 1024 * 1024;
 
 /// Resident memory for `model`'s loaded context: weights plus a ~half-weights
-/// inference working set, held once (one shared context, serial inference). The
-/// single source for this derivation, shared by the peak-memory estimate and the
-/// max-jobs solver so they cannot disagree. Saturating so an outsized model size
-/// can't overflow.
+/// inference working set, held once (one shared context, serial inference). Single
+/// source for the peak estimate and the max-jobs solver; saturating against overflow.
 fn resident_memory(model: Model) -> u64 {
     let weights = info(model).size;
     weights.saturating_add(weights / 2)
 }
 
-/// Estimated peak memory transcribing `model` at `jobs` concurrent decodes. The
-/// engine loads one shared model context and runs inference serially, so the
-/// weights and inference working set are resident once; only the in-flight decode
-/// buffers scale with `jobs`. This is deliberately more permissive than a per-job
-/// model copy because that copy never happens — fewer false refusals, still
-/// OOM-safe.
+/// Estimated peak memory at `jobs` concurrent decodes. One shared context, serial
+/// inference: weights and working set are resident once, only decode buffers scale
+/// with `jobs`. Deliberately permissive (no per-job copy happens) — fewer false refusals.
 fn estimated_memory(model: Model, jobs: usize) -> u64 {
-    // Saturating throughout so an absurd `--jobs` can't overflow (debug panic /
-    // release wrap); the result clamps to u64::MAX, which the guard reads as
-    // "won't fit".
+    // Saturating so an absurd `--jobs` can't overflow; it clamps to u64::MAX, which
+    // the guard reads as "won't fit".
     resident_memory(model).saturating_add(DECODE_BUFFER.saturating_mul(jobs.max(1) as u64))
 }
 
@@ -135,10 +124,9 @@ fn estimated_memory(model: Model, jobs: usize) -> u64 {
 /// processes.
 const MEMORY_BUDGET_PERCENT: u64 = 85;
 
-/// Bytes a run may use: `MEMORY_BUDGET_PERCENT`% of detected RAM. Single source so
-/// every guard agrees. Multiply before dividing so the percentage doesn't truncate
-/// the byte total; `saturating_mul` keeps it total over the whole `u64` domain (the
-/// guards are tested with synthetic RAM values).
+/// Bytes a run may use: `MEMORY_BUDGET_PERCENT`% of detected RAM. Multiply before
+/// dividing so the percentage doesn't truncate; `saturating_mul` stays total over the
+/// whole `u64` domain (guards are tested with synthetic RAM values).
 const fn memory_budget(total_ram: u64) -> u64 {
     total_ram.saturating_mul(MEMORY_BUDGET_PERCENT) / 100
 }
@@ -198,9 +186,8 @@ pub fn guard_memory(model: Model, jobs: usize, total: Option<u64>) -> Result<(),
         let need = human_size(estimated_memory(model, jobs));
         let have = human_size(total);
         // Recommend a model that fits at the SAME job count, so the hint never names
-        // the model just refused. On a machine so small nothing fits at this count,
-        // `largest_fitting` falls back to the smallest model that still doesn't fit —
-        // don't quote it; point at lowering jobs instead.
+        // the model just refused. When nothing fits, point at lowering jobs instead of
+        // quoting `largest_fitting`'s non-fitting fallback.
         let fits = largest_fitting(total, jobs);
         let detail = if would_exceed_memory(total, fits, jobs) {
             format!(
@@ -217,10 +204,9 @@ pub fn guard_memory(model: Model, jobs: usize, total: Option<u64>) -> Result<(),
 }
 
 /// The HuggingFace hub cache directory (`$HF_HOME/hub` or `~/.cache/huggingface/hub`).
-/// Derived from hf-hub's own resolution so it agrees with where downloads actually
-/// land on every platform — `dirs::home_dir()` resolves `%USERPROFILE%` on Windows,
-/// where `HOME` is usually unset. Single source: the lookup, the download, `models
-/// path`, and the bundled-VAD directory all share this root.
+/// From hf-hub's own resolution, so it matches where downloads land on every platform
+/// (Windows `%USERPROFILE%` where `HOME` is unset). Single source for lookup, download,
+/// `models path`, and the bundled-VAD directory.
 pub fn cache_dir() -> PathBuf {
     Cache::from_env().path().join("hub")
 }
@@ -259,9 +245,8 @@ const SILERO_VAD_BYTES: &[u8] =
 /// copy (HF cache, or a prior materialization); otherwise writes the bundled,
 /// SHA-pinned model so VAD never depends on the network.
 pub fn ensure_vad() -> Result<PathBuf, ScrybeError> {
-    // A read error or checksum mismatch on a cached copy falls through to writing
-    // the bundled, SHA-pinned model — the always-available floor — rather than
-    // failing the run.
+    // A read error or checksum mismatch on a cached copy falls through to the bundled,
+    // SHA-pinned model — the always-available floor — rather than failing the run.
     if let Some(path) = cached(VAD_REPO, VAD_FILE)
         && sha256_matches(&path, VAD_SHA256, "silero-vad").unwrap_or(false)
     {
@@ -282,10 +267,9 @@ fn materialize_vad(dir: &std::path::Path) -> Result<PathBuf, ScrybeError> {
         detail: format!("could not materialize the bundled VAD model: {e}"),
     };
     std::fs::create_dir_all(dir).map_err(&io_error)?;
-    // Write to a per-process temp file, then atomically rename it into place, so a
-    // concurrent or interrupted run never reads a half-written model (which would
-    // fail the SHA gate or load as corrupt). Rename within one directory is atomic;
-    // the loser of a race just replaces the file with byte-identical contents.
+    // Write to a per-process temp, then atomically rename, so a concurrent or
+    // interrupted run never reads a half-written model. Rename within one directory is
+    // atomic; a race's loser just replaces it with byte-identical contents.
     let tmp = dir.join(format!("{VAD_FILE}.{}.tmp", std::process::id()));
     std::fs::write(&tmp, SILERO_VAD_BYTES).map_err(&io_error)?;
     std::fs::rename(&tmp, &path).map_err(|e| {
@@ -321,9 +305,8 @@ fn fetch_verified(
         ));
     }
 
-    // `from_env`, not `new`: it builds on `Cache::from_env()` (HF_HOME-aware) and
-    // honors HF_ENDPOINT, so downloads land in the same tree `cached()`/`cache_dir()`
-    // read. `new` hardcodes ~/.cache/huggingface and would split pull from lookup.
+    // `from_env`, not `new`: HF_HOME/HF_ENDPOINT-aware, so downloads land in the same
+    // tree `cached()`/`cache_dir()` read. `new` hardcodes ~/.cache and would split them.
     let api = ApiBuilder::from_env()
         .with_progress(true)
         .build()
@@ -338,11 +321,10 @@ fn fetch_verified(
     )
 }
 
-/// Fetch-verify with one re-download on checksum mismatch: fetch, verify; on
-/// mismatch evict the corrupt blob and fetch once more, verify; if it still
-/// mismatches, fail loud. Pure over the fetch/verify/evict effects so the retry
-/// ordering (evict before re-fetch, exactly one retry, terminal error) is
-/// unit-testable without touching the network.
+/// Fetch-verify with one re-download on mismatch: fetch, verify; on mismatch evict and
+/// fetch once more; if it still mismatches, fail loud. Pure over the fetch/verify/evict
+/// effects, so the ordering (evict before re-fetch, exactly one retry) is unit-testable
+/// without the network.
 fn fetch_with_retry(
     mut fetch: impl FnMut() -> Result<PathBuf, ScrybeError>,
     verify: impl Fn(&std::path::Path) -> Result<bool, ScrybeError>,
@@ -374,9 +356,8 @@ fn sha256_matches(
     expected: &str,
     label: &str,
 ) -> Result<bool, ScrybeError> {
-    // Names a read fault as a download failure (a cached blob we can't read is, to
-    // the user, a fetch problem); distinct from `materialize_vad`'s `io_error`, which
-    // builds the generic `Io` variant.
+    // A read fault on a cached blob is, to the user, a fetch problem — distinct from
+    // `materialize_vad`'s `io_error`, which builds the generic `Io` variant.
     let read_error = |e: std::io::Error| ScrybeError::ModelDownloadFailed {
         model: label.to_owned(),
         detail: format!("{}: {e}", path.display()),

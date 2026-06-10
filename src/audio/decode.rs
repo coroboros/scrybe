@@ -1,11 +1,10 @@
 //! Decode audio files to 16 kHz mono f32 PCM.
 //!
-//! The default path is pure-Rust symphonia, streaming each decoded packet through a
-//! downmix and the [`Resampler16k`] as it arrives, so the full-resolution source is
-//! never resident — only the bounded 16 kHz output. HE-AAC/SBR is detected up front
-//! and rejected with an actionable message (symphonia is AAC-LC only). The optional
-//! ffmpeg path shells out for codecs symphonia cannot handle, and already emits
-//! 16 kHz mono directly.
+//! The default path is pure-Rust symphonia, streaming each packet through a downmix
+//! and [`Resampler16k`] so only the bounded 16 kHz output is resident, not the source.
+//! HE-AAC/SBR is detected up front and rejected (symphonia is AAC-LC only). The
+//! optional ffmpeg path shells out for codecs symphonia can't handle, emitting 16 kHz
+//! mono directly.
 
 use std::io::Read as _;
 use std::path::Path;
@@ -131,9 +130,8 @@ pub fn decode_file(path: &Path) -> Result<AudioPcm, ScrybeError> {
                         .to_owned(),
                 ));
             }
-            // End of stream is signalled as an unexpected-EOF I/O error; treat only
-            // that as the end. Any other I/O error is a genuine read failure — fail
-            // loud rather than silently truncate the transcript.
+            // End of stream surfaces as an unexpected-EOF I/O error; treat only that as
+            // the end. Any other I/O error is a real read failure — fail loud.
             Err(SymphoniaError::IoError(e)) if e.kind() == std::io::ErrorKind::UnexpectedEof => {
                 break;
             }
@@ -210,9 +208,8 @@ pub fn decode_via_ffmpeg(path: &Path) -> Result<AudioPcm, ScrybeError> {
 fn decode_via_ffmpeg_capped(path: &Path, max_samples: usize) -> Result<AudioPcm, ScrybeError> {
     let unsupported = |detail: String| ScrybeError::unsupported_codec(path, detail);
 
-    // `-i` consumes its next argument literally (ffmpeg has no `--` end-of-options
-    // marker), so a leading-dash name is already safe; canonicalizing to an absolute
-    // path is defense-in-depth, and falls back to the raw path if it fails.
+    // `-i` consumes its next arg literally (ffmpeg has no `--` marker), so a leading-dash
+    // name is already safe; the absolute path is defense-in-depth, raw path on failure.
     let input = std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
     let mut child = Command::new("ffmpeg")
         // `-nostdin` so a crafted container can never coax ffmpeg into reading the
@@ -249,11 +246,9 @@ fn decode_via_ffmpeg_capped(path: &Path, max_samples: usize) -> Result<AudioPcm,
             buf
         });
         let decoded = read_f32le_stream(&mut stdout, max_samples);
-        // On early stop (Overflow/Io) ffmpeg may still be writing to a now-undrained
-        // stdout pipe; it would block on the full pipe and never close stderr, hanging
-        // the join forever. Kill it and drop the read end BEFORE joining, so stderr
-        // hits EOF and the scope returns. (Killing here, inside the scope, is what
-        // makes the post-scope teardown reachable — the earlier ordering deadlocked.)
+        // On early stop, ffmpeg may still be writing; kill it and drop stdout BEFORE
+        // joining, else it blocks on the full pipe, never closes stderr, and the join
+        // hangs. Killing inside the scope is what makes the post-scope teardown reachable.
         if decoded.is_err() {
             let _ = child.kill();
         }
@@ -341,14 +336,11 @@ fn read_object_type(reader: &mut BitReader<'_>) -> Option<u32> {
 const SBR_SYNC_EXTENSION: u32 = 0x2B7;
 
 /// Detect HE-AAC / HE-AACv2 from an AudioSpecificConfig. Covers both signalings:
-/// explicit hierarchical (base object type 5 = SBR, 29 = PS) and backward-
-/// compatible (base type 2 + the `0x2B7` sync extension declaring SBR/PS), which
-/// is what Apple's encoder emits and what symphonia silently mis-decodes.
-///
-/// The backward-compatible extension sits at a determinate bit offset, right after
-/// the GASpecificConfig — so the config is parsed structurally to reach it rather
-/// than scanning the whole payload, which could match `0x2B7` coincidentally
-/// inside a valid AAC-LC config and false-reject it.
+/// explicit hierarchical (base AOT 5 = SBR, 29 = PS) and backward-compatible (base
+/// AOT 2 + the `0x2B7` sync extension), which is what Apple emits and symphonia
+/// silently mis-decodes. The backward-compatible extension sits at a determinate
+/// offset after the GASpecificConfig, so the config is parsed structurally to reach
+/// it — scanning the whole payload could match `0x2B7` in valid AAC-LC and false-reject.
 fn is_he_aac_asc(asc: &[u8]) -> bool {
     let mut r = BitReader::at(asc, 0);
     let Some(aot) = read_object_type(&mut r) else {
@@ -362,10 +354,9 @@ fn is_he_aac_asc(asc: &[u8]) -> bool {
     if sfi == 0x0f && r.read(24).is_none() {
         return false;
     }
-    // GASpecificConfig has a determinate length only with an explicit channel
-    // configuration (1..=7). Config 0 carries a variable program_config_element;
-    // a backward-compatible SBR extension does not occur there in practice, so it
-    // is treated as plain AAC-LC (recoverable via `--decoder ffmpeg` if ever wrong).
+    // GASpecificConfig has a determinate length only with an explicit channel config
+    // (1..=7). Config 0 carries a variable program_config_element where a compatible
+    // SBR extension doesn't occur in practice — treat as AAC-LC (`--decoder ffmpeg` if wrong).
     let Some(channels) = r.read(4) else {
         return false;
     };
@@ -382,12 +373,9 @@ fn is_he_aac_asc(asc: &[u8]) -> bool {
         Some(_) if r.read(14).is_some() => {}
         _ => return false,
     }
-    // extensionFlag. Conformant AAC-LC (AOT 2) sets it to 0, leaving the sync
-    // extension at the determinate offset read below. A set flag introduces
-    // AOT-specific trailing bits we don't consume, so the 11-bit read misaligns and
-    // almost never matches 0x2B7 — the stream then falls through to the AAC-LC path
-    // (symphonia, or `--decoder ffmpeg` if that mis-decodes). A non-issue for the
-    // backward-compatible HE-AAC this targets, where the flag is 0.
+    // extensionFlag. Conformant AAC-LC (AOT 2) sets it 0, leaving the sync extension at
+    // the determinate offset below. A set flag adds bits we don't consume, so the read
+    // misaligns and ~never matches 0x2B7 — harmless, as the HE-AAC we target sets it 0.
     if r.read(1).is_none() {
         return false;
     }

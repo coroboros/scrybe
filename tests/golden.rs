@@ -1,11 +1,9 @@
 //! Golden-transcript test — the transcription-quality contract.
 //!
-//! Transcribes a committed speech clip with the tiny model on the CPU backend
-//! and checks the result against a reference within a word-error-rate tolerance
-//! (float output is backend/quant-dependent, so an exact match is wrong). Skips
-//! cleanly when the tiny model is not cached on a developer machine; under CI
-//! (`SCRYBE_REQUIRE_MODEL`, where the model is pre-fetched) a missing model is a
-//! hard failure, so a green run can never mean "exercised nothing".
+//! Transcribes a committed clip with the tiny model and checks it against a reference
+//! within a word-error-rate tolerance (float output is backend/quant-dependent, so an
+//! exact match is wrong). Skips when the model is uncached; under CI
+//! (`SCRYBE_REQUIRE_MODEL`) a missing model is a hard failure, never a silent green.
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
 use std::path::Path;
@@ -222,13 +220,11 @@ fn uppercase_lang_is_normalized_not_silently_collapsed() {
 
 #[test]
 fn long_trailing_silence_does_not_hallucinate_or_loop() {
-    // The headline correctness floor over a long silence gap. The catastrophic
-    // failure the floor must prevent is a repetition LOOP / the gap filling with
-    // hallucinated text; whisper.cpp can still emit a rare stray token over silence
-    // (an inherent limit VAD + the no-speech gate reduce but don't fully erase), so
-    // assert the achievable guarantee: no loop and the gap stays near-empty — not a
-    // literal zero. Build speech + ~30 s of silence at runtime (no multi-MB fixture)
-    // through the production path (VAD on, as main wires it).
+    // The headline correctness floor over a long silence gap: the failure to prevent
+    // is a repetition LOOP or the gap filling with hallucinated text. whisper.cpp can
+    // still emit a rare stray token over silence (VAD + the no-speech gate reduce but
+    // don't erase it), so assert the achievable guarantee — no loop, gap near-empty,
+    // not a literal zero. Speech + ~30 s of silence built at runtime, VAD on as in main.
     let Some(model_path) = require_model_or_skip() else {
         return;
     };

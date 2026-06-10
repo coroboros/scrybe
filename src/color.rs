@@ -1,9 +1,8 @@
 //! The void-tinted color layer.
 //!
-//! Styles are defined once as [`anstyle::Style`] constants. All output goes
-//! through `anstream`, which strips ANSI when stdout/stderr is not a terminal
-//! or when `NO_COLOR` is set, and forces color on `CLICOLOR_FORCE=1`. [`init`]
-//! adds one rule on top: the `--no-color` flag forces plain output globally.
+//! Styles are `anstyle::Style` constants. All output flows through `anstream`, which
+//! strips ANSI off a non-terminal or under `NO_COLOR`; `init` adds one rule:
+//! `--no-color` forces plain output process-wide.
 
 use anstyle::{Ansi256Color, AnsiColor, Color, Effects, Style};
 

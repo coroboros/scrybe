@@ -37,10 +37,7 @@ impl AudioPcm {
 /// Decode `path` to 16 kHz mono f32 PCM via the chosen backend.
 pub fn load_audio(path: &Path, decoder: Decoder) -> Result<AudioPcm, ScrybeError> {
     match decoder {
-        // symphonia streams decode → downmix → resample to 16 kHz mono itself, so the
-        // source is never fully resident.
         Decoder::Symphonia => decode::decode_file(path),
-        // ffmpeg already emits 16 kHz mono.
         Decoder::Ffmpeg => decode::decode_via_ffmpeg(path),
     }
 }
@@ -55,10 +52,8 @@ fn downmix_into(interleaved: &[f32], channels: u16, out: &mut Vec<f32>) {
         out.extend_from_slice(interleaved);
         return;
     }
-    // A decoded packet always holds whole interleaved frames (a multiple of
-    // `channels`), so `chunks_exact` discards nothing real; a lone trailing sample
-    // only appears on malformed input, where dropping the incomplete frame is safer
-    // than fabricating one.
+    // A decoded packet holds whole frames, so `chunks_exact` drops nothing real; a
+    // lone trailing sample only appears on malformed input, where dropping it is safe.
     out.extend(
         interleaved
             .chunks_exact(channels)

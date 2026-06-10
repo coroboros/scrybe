@@ -1,13 +1,11 @@
 //! The whisper.cpp transcription engine (via whisper-rs).
 //!
-//! The backend is chosen at compile time: CPU by default, `metal`/`cuda`/
-//! `vulkan` when their cargo feature is enabled. The correctness floor lives
-//! here — `condition_on_previous_text` is disabled to break repetition loops,
-//! whisper.cpp's default no-speech/logprob/entropy thresholds and temperature
-//! fallback are kept, and segments whose no-speech probability is high are
-//! dropped so silence does not hallucinate text. Long-audio windowing is
-//! delegated to whisper.cpp (its internal 30 s windows) plus Silero VAD
-//! segmentation — the deliberate substitute for hand-rolled overlapped chunking.
+//! Backend is chosen at compile time (CPU default; `metal`/`cuda`/`vulkan` by feature).
+//! The correctness floor lives here: `condition_on_previous_text` off to break
+//! repetition loops, whisper.cpp's default thresholds and temperature fallback kept,
+//! high-no-speech segments dropped so silence can't hallucinate, and long-audio
+//! windowing delegated to whisper.cpp's 30 s windows + Silero VAD rather than
+//! hand-rolled chunking.
 
 use std::fmt;
 use std::path::{Path, PathBuf};
@@ -97,9 +95,8 @@ impl Engine {
     /// Load a ggml model from disk onto the active backend. `vad_model_path`, when
     /// present, enables Silero voice-activity segmentation per transcription.
     pub fn load(model_path: &Path, vad_model_path: Option<&Path>) -> Result<Self, ScrybeError> {
-        // Route whisper.cpp/GGML's chatty stderr into the (uninstalled) log
-        // backend, which silences it. A process-global effect, so install it once
-        // even when multiple engines are loaded (e.g. across tests).
+        // Silence whisper.cpp/GGML's chatty stderr via the (uninstalled) log backend.
+        // Process-global, so install once even across multiple engines (e.g. tests).
         static LOG_HOOKS: std::sync::Once = std::sync::Once::new();
         LOG_HOOKS.call_once(whisper_rs::install_logging_hooks);
         let mut params = WhisperContextParameters::default();
@@ -131,9 +128,8 @@ impl Engine {
         // condition_on_previous_text = false: the single most effective guard
         // against repetition loops on long audio.
         params.set_no_context(true);
-        // Quality gating floor (whisper.cpp's defaults, set explicitly): fall back
-        // through rising temperatures, and drop low-confidence / high-entropy /
-        // silent output rather than hallucinate.
+        // Quality floor (whisper.cpp defaults, set explicitly): rising-temperature
+        // fallback, dropping low-confidence / high-entropy / silent output.
         params.set_temperature(0.0);
         params.set_temperature_inc(0.2);
         // Passed to whisper.cpp too, but `filter_segments` is the authoritative
@@ -237,11 +233,10 @@ fn filter_segments(
         .collect()
 }
 
-/// Group whisper tokens (`(text, t0_cs, t1_cs)`, centisecond timestamps) into timed
-/// words. A token whose text begins with a space opens a new word — whisper renders
-/// the SentencePiece word boundary that way — and following spaceless tokens extend
-/// it. Bracketed special tokens (`[_BEG_]`, `[_TT_..]`) and blank tokens are skipped.
-/// Pure, so the grouping is unit-testable without a model.
+/// Group whisper tokens (`(text, t0_cs, t1_cs)`) into timed words. A space-prefixed
+/// token opens a word (how whisper renders the SentencePiece boundary); spaceless
+/// tokens extend it. Bracketed specials (`[_BEG_]`) and blanks are skipped. Pure, so
+/// the grouping is unit-testable without a model.
 fn group_words(tokens: impl IntoIterator<Item = (String, i64, i64)>) -> Vec<Word> {
     let mut words: Vec<Word> = Vec::new();
     for (text, t0, t1) in tokens {
@@ -269,11 +264,10 @@ fn group_words(tokens: impl IntoIterator<Item = (String, i64, i64)>) -> Vec<Word
     words
 }
 
-/// Normalize a requested language to what whisper.cpp expects: lowercased (its keys
-/// are lowercase ISO codes, matched case-sensitively), with an empty/whitespace code
-/// treated as unspecified (auto-detect). Without this an accepted `--lang EN` / `""`
-/// reaches whisper as an unknown code and silently collapses the transcript. All
-/// valid codes are lowercase, so lowercasing can't corrupt a real one.
+/// Normalize a language to what whisper.cpp expects: lowercased (its keys are
+/// case-sensitive lowercase ISO codes), empty/whitespace → unspecified (auto-detect).
+/// Without this, an accepted `--lang EN` / `""` reaches whisper as an unknown code and
+/// silently collapses the transcript; all valid codes are lowercase, so it's lossless.
 fn normalize_language(lang: Option<&str>) -> Option<String> {
     lang.map(str::to_ascii_lowercase)
         .filter(|code| !code.trim().is_empty())
@@ -294,9 +288,8 @@ fn load_error(backend: Backend, path: &Path, detail: String) -> ScrybeError {
 }
 
 fn run_error(detail: String) -> ScrybeError {
-    // `create_state`/`full` failures are runtime compute faults: the context — and
-    // thus the backend — already initialized in `Engine::load`. So this is never an
-    // init fault on any backend; `GpuInitFailed` is reserved for `load_error`.
+    // `create_state`/`full` are runtime compute faults: the context (and backend)
+    // already initialized in `Engine::load`, so `GpuInitFailed` stays in `load_error`.
     ScrybeError::TranscriptionFailed { detail }
 }
 

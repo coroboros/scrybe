@@ -53,13 +53,11 @@ fn transcribe(cli: &Cli) -> Result<i32, ScrybeError> {
         }
     }
 
-    // Resolve concurrency and the effective model up front so the memory guard
-    // checks what will actually run. Inference is serial (one shared context), so
-    // `--jobs` widens decode-ahead, not the number of concurrent inferences.
+    // Resolve jobs and model up front so the guard checks what actually runs.
+    // Inference is serial (one shared context); `--jobs` widens decode-ahead only.
     let backend = engine::active_backend();
-    // Read RAM once and thread it through jobs, model, and the guard. The auto job
-    // count and the default model are both chosen against it so a zero-config run is
-    // never refused by its own guard.
+    // RAM read once and threaded through jobs/model/guard, so a zero-config run can't
+    // be refused by its own guard (both are chosen against it).
     let total_ram = model::total_memory();
     let (jobs, clamp_note) = batch::resolve_jobs(cli.jobs, backend, total_ram);
     let model = model::resolve_model(cli.model, total_ram, jobs);
@@ -88,8 +86,7 @@ fn transcribe(cli: &Cli) -> Result<i32, ScrybeError> {
     }
 
     // Fail loud rather than silently overwrite when two inputs map to one output.
-    // Checked before the dry-run gate and model load, so a doomed run fails fast
-    // and the guard is reachable without a model on disk.
+    // Checked before the dry-run gate and model load, so a doomed run fails fast.
     if let Some(collision) = output::first_collision(&files, &formats, cli.out_dir.as_deref()) {
         return Ok(usage_error(&format!(
             "output collision — {collision}. Use distinct names or an `--out-dir` per source."
