@@ -1,5 +1,12 @@
 # Changelog
 
+## v0.1.4 - 10/06/2026
+
+### Configuration
+- clean up comments (#6)
+- drop the redundant CARGO_REGISTRY_TOKEN secret [skip ci]
+
+
 ## v0.1.3 - 09/06/2026
 
 ### Refactor
