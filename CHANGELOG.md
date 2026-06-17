@@ -1,5 +1,11 @@
 # Changelog
 
+## v0.1.5 - 17/06/2026
+
+### Configuration
+- `deps` — bump actions/checkout from 4.3.1 to 6.0.3 in the actions group (#7)
+
+
 ## v0.1.4 - 10/06/2026
 
 ### Configuration
