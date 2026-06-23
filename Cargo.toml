@@ -28,7 +28,7 @@ path = "src/main.rs"
 [dependencies]
 anstream = "1.0.0"
 anstyle = "1.0.14"
-audioadapter-buffers = "3.0.0"
+audioadapter-buffers = "4.0.0"
 clap = { version = "4.6.1", features = ["derive"] }
 ctrlc = "3.5.2"
 # `default-features = false` + the sync `ureq` backend keeps the async reqwest/hyper/
