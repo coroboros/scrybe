@@ -1,0 +1,58 @@
+name: ONNX substrate probe
+
+# Temporary gate for the ONNX Runtime substrate: compiles the probe example and
+# substrate tests on the exact runners the dist pipeline uses, runs one real
+# inference per target, and requires a silent stderr on the cache-hit run.
+# x86_64-apple-darwin has no upstream prebuilt static lib (dropped with ORT 1.23);
+# that leg documents the gap until a self-built archive is wired in.
+on:
+  push:
+    branches: [feat/v2-ort-substrate]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  probe:
+    name: probe · ${{ matrix.target }}
+    runs-on: ${{ matrix.runner }}
+    continue-on-error: ${{ matrix.known-gap }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { runner: macos-14, target: aarch64-apple-darwin, known-gap: false }
+          - { runner: macos-15-intel, target: x86_64-apple-darwin, known-gap: true }
+          - { runner: ubuntu-22.04, target: x86_64-unknown-linux-gnu, known-gap: false }
+          - { runner: ubuntu-22.04-arm, target: aarch64-unknown-linux-gnu, known-gap: false }
+          - { runner: windows-2022, target: x86_64-pc-windows-msvc, known-gap: false }
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10  # v6.0.3
+      - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4  # v2.9.1
+        with:
+          key: ort-probe-${{ matrix.target }}
+      - name: Install cmake (Linux)
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y cmake
+      - name: Build probe
+        shell: bash
+        run: cargo build --release --example ort-probe
+      - name: Substrate tests
+        shell: bash
+        run: cargo test --release --test ort_substrate
+      - name: Run probe (first run may download the model)
+        shell: bash
+        run: ./target/release/examples/ort-probe
+      - name: Run probe again — stderr must stay silent
+        shell: bash
+        run: |
+          ./target/release/examples/ort-probe 2>stderr.log
+          if [ -s stderr.log ]; then
+            echo "::error::stderr is not clean on a cache-hit run:"
+            cat stderr.log
+            exit 1
+          fi
+      - name: Probe binary size
+        shell: bash
+        run: ls -la target/release/examples/

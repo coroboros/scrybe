@@ -28,6 +28,14 @@ macro_rules! vad_file {
 const VAD_FILE: &str = vad_file!();
 const VAD_SHA256: &str = "29940d98d42b91fbd05ce489f3ecf7c72f0a42f027e4875919a28fb4c04ea2cf";
 
+/// The pyannote segmentation-3.0 speaker-diarization model (MIT), via the ungated
+/// onnx-community ONNX export — the upstream pyannote repo gates downloads behind a
+/// Hugging Face account, which would break scrybe's anonymous fetch.
+const SEGMENTATION_REPO: &str = "onnx-community/pyannote-segmentation-3.0";
+const SEGMENTATION_FILE: &str = "onnx/model.onnx";
+const SEGMENTATION_SHA256: &str =
+    "057ee564753071c0b09b5b611648b50ac188d50846bff5f01e9f7bbf1591ea25";
+
 /// Static metadata for one model: where to fetch it and what it can do.
 pub struct ModelInfo {
     pub repo: &'static str,
@@ -232,6 +240,18 @@ pub fn ensure_available(model: Model, offline: bool) -> Result<PathBuf, ScrybeEr
         info.file,
         info.sha256,
         &model.to_string(),
+        offline,
+    )
+}
+
+/// Ensure the speaker-segmentation model is on disk and verified, returning its
+/// path. Same fetch/verify/cache semantics as the Whisper weights.
+pub fn ensure_segmentation(offline: bool) -> Result<PathBuf, ScrybeError> {
+    fetch_verified(
+        SEGMENTATION_REPO,
+        SEGMENTATION_FILE,
+        SEGMENTATION_SHA256,
+        "segmentation",
         offline,
     )
 }

@@ -59,6 +59,12 @@ vulkan = ["whisper-rs/vulkan"]
 
 [dev-dependencies]
 assert_cmd = "2.2.2"
+ndarray = "0.17"
+# Exact-pinned like whisper-rs: ort is a pre-1.0 rc line, and its build script
+# fetches a SHA-256-verified ONNX Runtime static lib matched to the crate version —
+# a silent bump would swap the linked runtime. Dev-only while the probe example
+# proves the substrate; the diarization feature promotes it to a runtime dependency.
+ort = "=2.0.0-rc.12"
 predicates = "3.1.4"
 serde_json = "1.0.150"
 tempfile = "3.27.0"
