@@ -10,15 +10,11 @@ use std::path::PathBuf;
 
 use ort::session::Session;
 use ort::value::TensorRef;
-use scrybe::audio::{self, TARGET_SAMPLE_RATE};
+use scrybe::audio;
 use scrybe::cli::Decoder;
+use scrybe::diarize::{POWERSET_CLASSES, WINDOW_SAMPLES};
 use scrybe::error::ScrybeError;
 use scrybe::model;
-
-/// One segmentation window: the model consumes fixed 10 s frames at 16 kHz.
-const WINDOW_SAMPLES: usize = 10 * TARGET_SAMPLE_RATE as usize;
-/// The powerset head emits 7 classes (silence, 3 single speakers, 3 pairs).
-const POWERSET_CLASSES: usize = 7;
 
 fn main() {
     match run() {
@@ -37,6 +33,9 @@ fn run() -> Result<String, ScrybeError> {
     );
 
     let model_path = model::ensure_segmentation(false)?;
+    // Pre-warm the second diarization model too, so a green probe leaves a
+    // cache the diarization tests can run offline against.
+    model::ensure_embedding(false)?;
     let mut samples = audio::load_audio(&wav, Decoder::Symphonia)?.samples;
     samples.resize(WINDOW_SAMPLES, 0.0);
 

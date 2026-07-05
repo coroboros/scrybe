@@ -36,6 +36,13 @@ const SEGMENTATION_FILE: &str = "onnx/model.onnx";
 const SEGMENTATION_SHA256: &str =
     "057ee564753071c0b09b5b611648b50ac188d50846bff5f01e9f7bbf1591ea25";
 
+/// The wespeaker ResNet34-LM speaker-embedding model (CC-BY-4.0), via the
+/// ungated onnx-community ONNX export — the second half of the diarization
+/// pipeline, clustered to tell speakers apart across windows.
+const EMBEDDING_REPO: &str = "onnx-community/wespeaker-voxceleb-resnet34-LM";
+const EMBEDDING_FILE: &str = "onnx/model.onnx";
+const EMBEDDING_SHA256: &str = "3955447b0499dc9e0a4541a895df08b03c69098eba4e56c02b5603e9f7f4fcbb";
+
 /// Static metadata for one model: where to fetch it and what it can do.
 pub struct ModelInfo {
     pub repo: &'static str,
@@ -252,6 +259,18 @@ pub fn ensure_segmentation(offline: bool) -> Result<PathBuf, ScrybeError> {
         SEGMENTATION_FILE,
         SEGMENTATION_SHA256,
         "segmentation",
+        offline,
+    )
+}
+
+/// Ensure the speaker-embedding model is on disk and verified, returning its
+/// path.
+pub fn ensure_embedding(offline: bool) -> Result<PathBuf, ScrybeError> {
+    fetch_verified(
+        EMBEDDING_REPO,
+        EMBEDDING_FILE,
+        EMBEDDING_SHA256,
+        "embedding",
         offline,
     )
 }

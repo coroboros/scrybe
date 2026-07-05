@@ -7,6 +7,7 @@ pub mod audio;
 pub mod batch;
 pub mod cli;
 pub mod color;
+pub mod diarize;
 pub mod engine;
 pub mod error;
 pub mod model;
