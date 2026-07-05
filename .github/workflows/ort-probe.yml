@@ -3,8 +3,16 @@ name: ONNX substrate probe
 # Temporary gate for the ONNX Runtime substrate: compiles the probe example and
 # substrate tests on the exact runners the dist pipeline uses, runs one real
 # inference per target, and requires a silent stderr on the cache-hit run.
-# x86_64-apple-darwin has no upstream prebuilt static lib (dropped with ORT 1.23);
-# that leg documents the gap until a self-built archive is wired in.
+#
+# Three targets cannot use pyke's prebuilt static libs and compile ONNX Runtime
+# v1.24.2 from source instead (cached across runs):
+#   - x86_64-apple-darwin — pyke dropped Intel macOS archives with ORT 1.23;
+#   - {x86_64,aarch64}-unknown-linux-gnu — pyke's libs are built against
+#     glibc >= 2.38 (__isoc23_* symbols) and fail to link on ubuntu-22.04,
+#     and building on a newer image would raise the glibc floor of shipped
+#     binaries. Self-building on 22.04 keeps the current floor.
+# ort-sys consumes the raw CMake build dir via ORT_LIB_PATH (api-24 needs
+# ORT >= 1.24.0).
 on:
   push:
     branches: [feat/v2-ort-substrate]
@@ -17,16 +25,15 @@ jobs:
   probe:
     name: probe · ${{ matrix.target }}
     runs-on: ${{ matrix.runner }}
-    continue-on-error: ${{ matrix.known-gap }}
     strategy:
       fail-fast: false
       matrix:
         include:
-          - { runner: macos-14, target: aarch64-apple-darwin, known-gap: false }
-          - { runner: macos-15-intel, target: x86_64-apple-darwin, known-gap: true }
-          - { runner: ubuntu-22.04, target: x86_64-unknown-linux-gnu, known-gap: false }
-          - { runner: ubuntu-22.04-arm, target: aarch64-unknown-linux-gnu, known-gap: false }
-          - { runner: windows-2022, target: x86_64-pc-windows-msvc, known-gap: false }
+          - { runner: macos-14, target: aarch64-apple-darwin, build-ort: false }
+          - { runner: macos-15-intel, target: x86_64-apple-darwin, build-ort: true, ort-build-dir: build/MacOS/Release }
+          - { runner: ubuntu-22.04, target: x86_64-unknown-linux-gnu, build-ort: true, ort-build-dir: build/Linux/Release }
+          - { runner: ubuntu-22.04-arm, target: aarch64-unknown-linux-gnu, build-ort: true, ort-build-dir: build/Linux/Release }
+          - { runner: windows-2022, target: x86_64-pc-windows-msvc, build-ort: false }
     steps:
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10  # v6.0.3
       - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4  # v2.9.1
@@ -35,6 +42,33 @@ jobs:
       - name: Install cmake (Linux)
         if: runner.os == 'Linux'
         run: sudo apt-get update && sudo apt-get install -y cmake
+      - name: Restore self-built ONNX Runtime
+        if: matrix.build-ort
+        id: ort-cache
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830  # v4.3.0
+        with:
+          path: ort-prebuilt
+          key: ort-static-1.24.2-${{ matrix.target }}-v1
+      - name: Build ONNX Runtime from source (static, CPU-only)
+        if: matrix.build-ort && steps.ort-cache.outputs.cache-hit != 'true'
+        shell: bash
+        env:
+          MACOSX_DEPLOYMENT_TARGET: "13.4"
+        run: |
+          git clone --depth 1 --branch v1.24.2 --recurse-submodules --shallow-submodules \
+            https://github.com/microsoft/onnxruntime ort-src
+          cd ort-src
+          ./build.sh --config Release --parallel --skip_tests \
+            --compile_no_warning_as_error --skip_submodule_sync \
+            --cmake_extra_defines onnxruntime_BUILD_UNIT_TESTS=OFF
+          cd ..
+          mkdir -p ort-prebuilt
+          rsync -am --include='*/' --include='*.a' --exclude='*' \
+            "ort-src/${{ matrix.ort-build-dir }}/" ort-prebuilt/
+      - name: Link against the self-built runtime
+        if: matrix.build-ort
+        shell: bash
+        run: echo "ORT_LIB_PATH=$GITHUB_WORKSPACE/ort-prebuilt" >> "$GITHUB_ENV"
       - name: Build probe
         shell: bash
         run: cargo build --release --example ort-probe
