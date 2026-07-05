@@ -45,7 +45,7 @@ jobs:
       - name: Restore self-built ONNX Runtime
         if: matrix.build-ort
         id: ort-cache
-        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830  # v4.3.0
+        uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830  # v4.3.0
         with:
           path: ort-prebuilt
           key: ort-static-1.24.2-${{ matrix.target }}-v1
@@ -61,14 +61,26 @@ jobs:
           ./build.sh --config Release --parallel --skip_tests \
             --compile_no_warning_as_error --skip_submodule_sync \
             --cmake_extra_defines onnxruntime_BUILD_UNIT_TESTS=OFF
+          # re2 is fetched but only test targets depend on it, so `all` never
+          # builds it — ort-sys links it unconditionally. Build it explicitly.
+          cmake --build "${{ matrix.ort-build-dir }}" --target re2
           cd ..
           mkdir -p ort-prebuilt
           rsync -am --include='*/' --include='*.a' --exclude='*' \
             "ort-src/${{ matrix.ort-build-dir }}/" ort-prebuilt/
+      - name: Save self-built ONNX Runtime
+        if: matrix.build-ort && steps.ort-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830  # v4.3.0
+        with:
+          path: ort-prebuilt
+          key: ort-static-1.24.2-${{ matrix.target }}-v1
       - name: Link against the self-built runtime
         if: matrix.build-ort
         shell: bash
-        run: echo "ORT_LIB_PATH=$GITHUB_WORKSPACE/ort-prebuilt" >> "$GITHUB_ENV"
+        run: |
+          echo "ORT_LIB_PATH=$GITHUB_WORKSPACE/ort-prebuilt" >> "$GITHUB_ENV"
+          echo "layout check:"
+          find ort-prebuilt \( -name 'libonnxruntime_common.a' -o -name 'libre2.a' -o -name 'libonnx.a' \)
       - name: Build probe
         shell: bash
         run: cargo build --release --example ort-probe
