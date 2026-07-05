@@ -117,6 +117,44 @@ fn silence_yields_no_turns() {
 }
 
 #[test]
+fn matches_the_python_reference_within_one_frame() {
+    // tests/reference/diarize_reference.py is an independent implementation
+    // of the same pyannote 3.1 algorithm (numpy/scipy/onnxruntime); its
+    // committed output pins this port numerically. One segmentation frame
+    // (10/589 s ≈ 17 ms) of boundary headroom absorbs ONNX kernel drift
+    // across platforms; anything looser would mask real regressions.
+    const BOUNDARY_TOLERANCE: f64 = 0.02;
+
+    let Some(turns) = diarize_fixture("two-speakers.wav", &DiarizeOptions::default()) else {
+        return;
+    };
+    let expected: Vec<serde_json::Value> = serde_json::from_str(
+        &std::fs::read_to_string(fixture("two-speakers.expected.json")).unwrap(),
+    )
+    .unwrap();
+
+    assert_eq!(
+        turns.len(),
+        expected.len(),
+        "turn count diverges: {turns:?}"
+    );
+    for (turn, reference) in turns.iter().zip(&expected) {
+        assert_eq!(
+            turn.speaker,
+            reference["speaker"].as_u64().unwrap() as usize,
+            "speaker sequence diverges at {turn:?}"
+        );
+        let start = reference["start"].as_f64().unwrap();
+        let end = reference["end"].as_f64().unwrap();
+        assert!(
+            (turn.start - start).abs() <= BOUNDARY_TOLERANCE
+                && (turn.end - end).abs() <= BOUNDARY_TOLERANCE,
+            "boundary drift beyond one frame: {turn:?} vs [{start}, {end}]"
+        );
+    }
+}
+
+#[test]
 fn identical_runs_are_identical() {
     let Some(first) = diarize_fixture("two-speakers.wav", &DiarizeOptions::default()) else {
         return;
