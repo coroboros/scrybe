@@ -1,8 +1,10 @@
 name: ONNX substrate probe
 
-# Temporary gate for the ONNX Runtime substrate: compiles the probe example and
-# substrate tests on the exact runners the dist pipeline uses, runs one real
-# inference per target, and requires a silent stderr on the cache-hit run.
+# Substrate gate for ONNX Runtime: compiles the probe example and substrate
+# tests on the exact runners the dist pipeline uses, runs one real inference per
+# target, and requires a silent stderr on the cache-hit run. Runs on PRs that
+# touch the substrate (the ort pin, the diarization code, or this workflow) so a
+# future ort/ONNX Runtime bump can't silently break a target before release.
 #
 # Three targets cannot use pyke's prebuilt static libs and compile ONNX Runtime
 # v1.24.2 from source instead (cached across runs):
@@ -14,8 +16,14 @@ name: ONNX substrate probe
 # ort-sys consumes the raw CMake build dir via ORT_LIB_PATH (api-24 needs
 # ORT >= 1.24.0).
 on:
-  push:
-    branches: [feat/v2-ort-substrate]
+  pull_request:
+    paths:
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - "ci/setup.sh"
+      - "examples/ort-probe.rs"
+      - "src/diarize/**"
+      - ".github/workflows/ort-probe.yml"
   workflow_dispatch:
 
 permissions:

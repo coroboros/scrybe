@@ -285,7 +285,7 @@ Stable across releases — only ever added, never renumbered.
 
 - **Per-file length ceiling** — decode streams to 16 kHz mono, so the source size is unbounded, but the resident output caps at ~4.6 hours per file (exit `10` beyond that). Split marathon recordings.
 - **HE-AAC/SBR** — the built-in decoder rejects it rather than mis-decode. Use `--decoder ffmpeg` or re-encode.
-- **Diarization trades peak accuracy for zero setup** — `--diarize` runs the pyannote 3.1 recipe fully offline with agglomerative clustering; on hard audio (heavy overlap, many similar voices) a tuned pyannote/WhisperX Python setup can still edge it out. Segments keep one dominant speaker; per-word labels in JSON carry the detail.
+- **Diarization trades peak accuracy for zero setup** — `--diarize` runs the pyannote 3.1 recipe fully offline with agglomerative clustering; on hard audio (heavy overlap, many similar voices) a tuned pyannote/WhisperX Python setup can still edge it out. Segments keep one dominant speaker; per-word labels in JSON carry the detail. Clustering memory grows with the recording's speech length (as in pyannote), so a multi-hour file wants a few GB of headroom.
 - **GPU backends build from source** — Metal ships in Apple Silicon prebuilts; `cuda` and `vulkan` are opt-in cargo features built locally.
 
 ## Compared to alternatives

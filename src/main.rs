@@ -60,13 +60,16 @@ fn transcribe(cli: &Cli) -> Result<i32, ScrybeError> {
     // RAM read once and threaded through jobs/model/guard, so a zero-config run can't
     // be refused by its own guard (both are chosen against it).
     let total_ram = model::total_memory();
-    let (jobs, clamp_note) = batch::resolve_jobs(cli.jobs, backend, total_ram);
-    let model = model::resolve_model(cli.model, total_ram, jobs);
+    // `--diarize` holds the two ONNX models resident alongside Whisper; reserve for
+    // them in jobs, model, AND guard so all three share one predicate and a
+    // zero-config diarize run is never refused by its own auto-pick.
     let extra_resident = if cli.diarize {
         model::DIARIZATION_RESIDENT
     } else {
         0
     };
+    let (jobs, clamp_note) = batch::resolve_jobs(cli.jobs, backend, total_ram, extra_resident);
+    let model = model::resolve_model(cli.model, total_ram, jobs, extra_resident);
     model::guard_memory(model, jobs, total_ram, extra_resident)?;
 
     if let Some(code) = validate_model_capabilities(model, cli) {
@@ -164,6 +167,7 @@ fn transcribe(cli: &Cli) -> Result<i32, ScrybeError> {
         let meta = output::Meta {
             model: &model_name,
             duration: pcm.duration_secs(),
+            diarized: cli.diarize,
         };
         anstream::println!("{}", output::render(&transcript, formats[0], &meta));
         return Ok(0);
@@ -197,6 +201,7 @@ fn transcribe(cli: &Cli) -> Result<i32, ScrybeError> {
         model: &model_name,
         force: cli.force,
         jobs,
+        diarized: cli.diarize,
     };
     batch::run(
         &engine,

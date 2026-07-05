@@ -19,6 +19,10 @@ const JSON_SCHEMA_VERSION: u32 = 1;
 pub struct Meta<'a> {
     pub model: &'a str,
     pub duration: f64,
+    /// Whether `--diarize` ran. Drives the tsv/csv speaker column so a batch
+    /// keeps one schema even when a file yields no speakers (empty cells, not a
+    /// dropped column).
+    pub diarized: bool,
 }
 
 pub fn render(transcript: &Transcript, format: Format, meta: &Meta<'_>) -> String {
@@ -27,15 +31,17 @@ pub fn render(transcript: &Transcript, format: Format, meta: &Meta<'_>) -> Strin
         Format::Srt => render_srt(transcript),
         Format::Vtt => render_vtt(transcript),
         Format::Json => render_json(transcript, meta),
-        Format::Tsv => render_tsv(transcript),
-        Format::Csv => render_csv(transcript),
+        Format::Tsv => render_tsv(transcript, meta.diarized),
+        Format::Csv => render_csv(transcript, meta.diarized),
     }
 }
 
 /// Write the transcript in each requested format next to `input` (or into
 /// `out_dir`), returning the paths written. Each file lands via a same-dir
 /// temp + atomic rename, so a hard kill mid-write can never leave a truncated
-/// transcript behind.
+/// transcript behind. Rename replaces the destination inode: a symlinked
+/// output path is swapped for a regular file — durability over in-place
+/// overwrite, the right default for generated sidecars.
 pub fn write_outputs(
     transcript: &Transcript,
     input: &Path,
@@ -52,11 +58,14 @@ pub fn write_outputs(
         let mut tmp = path.clone().into_os_string();
         tmp.push(format!(".{}.tmp", std::process::id()));
         let tmp = PathBuf::from(tmp);
-        std::fs::write(&tmp, render(transcript, format, meta)).map_err(io_error)?;
-        std::fs::rename(&tmp, &path).map_err(|e| {
+        // Write then rename; on any failure remove the temp so a full disk or a
+        // permission fault never strands `<name>.<pid>.tmp` litter.
+        let write_then_rename = std::fs::write(&tmp, render(transcript, format, meta))
+            .and_then(|()| std::fs::rename(&tmp, &path));
+        if let Err(e) = write_then_rename {
             let _ = std::fs::remove_file(&tmp);
-            io_error(e)
-        })?;
+            return Err(io_error(e));
+        }
         written.push(path);
     }
     Ok(written)
@@ -144,12 +153,6 @@ fn speaker_name(speaker: usize) -> String {
     format!("Speaker {}", speaker + 1)
 }
 
-/// Whether any segment carries a speaker — the switch for the extra tabular
-/// column, so undiarized output stays byte-identical to earlier releases.
-fn has_speakers(transcript: &Transcript) -> bool {
-    transcript.segments.iter().any(|s| s.speaker.is_some())
-}
-
 fn render_txt(transcript: &Transcript) -> String {
     let mut out = String::new();
     for segment in &transcript.segments {
@@ -202,9 +205,8 @@ fn render_vtt(transcript: &Transcript) -> String {
     out
 }
 
-fn render_tsv(transcript: &Transcript) -> String {
-    let speakers = has_speakers(transcript);
-    let mut out = String::from(if speakers {
+fn render_tsv(transcript: &Transcript, diarized: bool) -> String {
+    let mut out = String::from(if diarized {
         "start\tend\ttext\tspeaker\n"
     } else {
         "start\tend\ttext\n"
@@ -217,7 +219,7 @@ fn render_tsv(transcript: &Transcript) -> String {
             (segment.end * 1000.0).round() as i64,
             segment.text,
         );
-        if speakers {
+        if diarized {
             let _ = write!(
                 out,
                 "\t{}",
@@ -229,9 +231,8 @@ fn render_tsv(transcript: &Transcript) -> String {
     out
 }
 
-fn render_csv(transcript: &Transcript) -> String {
-    let speakers = has_speakers(transcript);
-    let mut out = String::from(if speakers {
+fn render_csv(transcript: &Transcript, diarized: bool) -> String {
+    let mut out = String::from(if diarized {
         "start,end,text,speaker\n"
     } else {
         "start,end,text\n"
@@ -244,7 +245,7 @@ fn render_csv(transcript: &Transcript) -> String {
             (segment.end * 1000.0).round() as i64,
             csv_field(segment.text),
         );
-        if speakers {
+        if diarized {
             let _ = write!(
                 out,
                 ",{}",
@@ -474,6 +475,7 @@ mod tests {
             &Meta {
                 model: "tiny",
                 duration: 3.0,
+                diarized: false,
             },
         );
         let value: serde_json::Value = serde_json::from_str(&json).unwrap();
@@ -549,7 +551,7 @@ mod tests {
 
     #[test]
     fn tsv_has_header_and_millisecond_rows() {
-        let tsv = render_tsv(&transcript());
+        let tsv = render_tsv(&transcript(), false);
         assert!(tsv.starts_with("start\tend\ttext\n"));
         assert!(tsv.contains("0\t1500\tHello world"));
         assert!(tsv.contains("1500\t3000\tsecond line"));
@@ -557,11 +559,31 @@ mod tests {
 
     #[test]
     fn csv_has_header_and_quotes_fields() {
-        let csv = render_csv(&transcript());
+        let csv = render_csv(&transcript(), false);
         assert!(csv.starts_with("start,end,text\n"));
         assert!(csv.contains("0,1500,\"Hello world\""));
         // A comma or quote in the text must not break the columns.
         assert_eq!(csv_field("a, \"b\""), "\"a, \"\"b\"\"\"");
+    }
+
+    #[test]
+    fn tabular_speaker_column_follows_the_flag_not_the_data() {
+        // Column presence tracks --diarize, not whether speakers were found, so a
+        // batch keeps one schema: a diarized-but-speakerless transcript still emits
+        // the column (empty cells), never a narrower row than its siblings.
+        let speakerless = transcript(); // both segments have speaker: None
+        let tsv = render_tsv(&speakerless, true);
+        assert!(tsv.starts_with("start\tend\ttext\tspeaker\n"));
+        assert!(
+            tsv.lines().nth(1).unwrap().ends_with('\t'),
+            "empty speaker cell"
+        );
+        let csv = render_csv(&speakerless, true);
+        assert!(csv.starts_with("start,end,text,speaker\n"));
+        assert!(
+            csv.lines().nth(1).unwrap().ends_with(','),
+            "empty speaker cell"
+        );
     }
 
     #[test]
