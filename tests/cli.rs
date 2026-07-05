@@ -802,6 +802,8 @@ fn diarize_json_carries_two_speaker_labels_end_to_end() {
     }
     let output = scrybe()
         .args([
+            "--model",
+            "tiny",
             "--diarize",
             "--json",
             "tests/fixtures/speech/two-speakers.wav",
@@ -829,7 +831,7 @@ fn undiarized_json_never_carries_speaker_keys() {
         return;
     }
     let output = scrybe()
-        .args(["--json", "tests/fixtures/speech/en.wav"])
+        .args(["--model", "tiny", "--json", "tests/fixtures/speech/en.wav"])
         .assert()
         .success();
     let stdout = String::from_utf8_lossy(&output.get_output().stdout).into_owned();
