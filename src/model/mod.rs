@@ -43,6 +43,14 @@ const EMBEDDING_REPO: &str = "onnx-community/wespeaker-voxceleb-resnet34-LM";
 const EMBEDDING_FILE: &str = "onnx/model.onnx";
 const EMBEDDING_SHA256: &str = "3955447b0499dc9e0a4541a895df08b03c69098eba4e56c02b5603e9f7f4fcbb";
 
+const SEGMENTATION_SIZE: u64 = 5_986_908;
+const EMBEDDING_SIZE: u64 = 26_535_549;
+
+/// Extra resident memory a diarizing run holds beyond the Whisper context:
+/// both ONNX models plus ONNX Runtime session arenas. Deliberately generous,
+/// in the guard's permissive spirit.
+pub const DIARIZATION_RESIDENT: u64 = 256 * 1024 * 1024;
+
 /// Static metadata for one model: where to fetch it and what it can do.
 pub struct ModelInfo {
     pub repo: &'static str,
@@ -192,19 +200,28 @@ pub fn total_memory() -> Option<u64> {
 }
 
 /// Refuse to run when the model plus job count would not fit in memory. Takes the
-/// detected total so the whole run reads RAM once.
-pub fn guard_memory(model: Model, jobs: usize, total: Option<u64>) -> Result<(), ScrybeError> {
+/// detected total so the whole run reads RAM once. `extra_resident` reserves
+/// space for anything loaded alongside Whisper (the diarization models).
+pub fn guard_memory(
+    model: Model,
+    jobs: usize,
+    total: Option<u64>,
+    extra_resident: u64,
+) -> Result<(), ScrybeError> {
     let Some(total) = total else {
         return Ok(());
     };
-    if would_exceed_memory(total, model, jobs) {
-        let need = human_size(estimated_memory(model, jobs));
+    let exceeds = |model: Model, jobs: usize| {
+        estimated_memory(model, jobs).saturating_add(extra_resident) > memory_budget(total)
+    };
+    if exceeds(model, jobs) {
+        let need = human_size(estimated_memory(model, jobs).saturating_add(extra_resident));
         let have = human_size(total);
         // Recommend a model that fits at the SAME job count, so the hint never names
         // the model just refused. When nothing fits, point at lowering jobs instead of
         // quoting `largest_fitting`'s non-fitting fallback.
         let fits = largest_fitting(total, jobs);
-        let detail = if would_exceed_memory(total, fits, jobs) {
+        let detail = if exceeds(fits, jobs) {
             format!(
                 "{model} at {jobs} job(s) needs ~{need}, but only {have} is available; no model fits at {jobs} job(s)"
             )
@@ -258,7 +275,7 @@ pub fn ensure_segmentation(offline: bool) -> Result<PathBuf, ScrybeError> {
         SEGMENTATION_REPO,
         SEGMENTATION_FILE,
         SEGMENTATION_SHA256,
-        "segmentation",
+        "diarization",
         offline,
     )
 }
@@ -270,9 +287,41 @@ pub fn ensure_embedding(offline: bool) -> Result<PathBuf, ScrybeError> {
         EMBEDDING_REPO,
         EMBEDDING_FILE,
         EMBEDDING_SHA256,
-        "embedding",
+        "diarization",
         offline,
     )
+}
+
+/// Ensure both diarization models are on disk and verified, returning
+/// (segmentation, embedding). Resolved at plan time so a missing model fails
+/// before any transcription starts.
+pub fn ensure_diarization(offline: bool) -> Result<(PathBuf, PathBuf), ScrybeError> {
+    Ok((ensure_segmentation(offline)?, ensure_embedding(offline)?))
+}
+
+/// The diarization pair for status displays: (label, size, cached path).
+pub fn diarization_status() -> [(&'static str, u64, Option<PathBuf>); 2] {
+    [
+        (
+            "segmentation",
+            SEGMENTATION_SIZE,
+            cached(SEGMENTATION_REPO, SEGMENTATION_FILE),
+        ),
+        (
+            "embedding",
+            EMBEDDING_SIZE,
+            cached(EMBEDDING_REPO, EMBEDDING_FILE),
+        ),
+    ]
+}
+
+/// Evict both diarization models, returning how many were actually cached.
+pub fn evict_diarization() -> usize {
+    diarization_status()
+        .into_iter()
+        .filter_map(|(_, _, path)| path)
+        .map(|path| evict(&path))
+        .count()
 }
 
 /// The Silero VAD model, bundled in the binary so the mandated correctness floor
@@ -586,11 +635,11 @@ mod tests {
     #[test]
     fn oom_hint_never_names_a_model_that_does_not_fit() {
         // When something fits, the hint names a fitting model.
-        let err = guard_memory(Model::LargeV3, 3, Some(8 * GB)).unwrap_err();
+        let err = guard_memory(Model::LargeV3, 3, Some(8 * GB), 0).unwrap_err();
         assert!(err.to_string().contains("fits is `"), "{err}");
         // When nothing fits at this RAM (even tiny exceeds budget), the hint must not
         // quote a model that was just refused — it points at lowering jobs instead.
-        let err = guard_memory(Model::LargeV3, 1, Some(GB)).unwrap_err();
+        let err = guard_memory(Model::LargeV3, 1, Some(GB), 0).unwrap_err();
         let msg = err.to_string();
         assert!(msg.contains("no model fits"), "{msg}");
         assert!(

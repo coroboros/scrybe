@@ -33,7 +33,9 @@ pub fn render(transcript: &Transcript, format: Format, meta: &Meta<'_>) -> Strin
 }
 
 /// Write the transcript in each requested format next to `input` (or into
-/// `out_dir`), returning the paths written.
+/// `out_dir`), returning the paths written. Each file lands via a same-dir
+/// temp + atomic rename, so a hard kill mid-write can never leave a truncated
+/// transcript behind.
 pub fn write_outputs(
     transcript: &Transcript,
     input: &Path,
@@ -44,8 +46,16 @@ pub fn write_outputs(
     let mut written = Vec::new();
     for &format in formats {
         let path = output_path(input, format, out_dir);
-        std::fs::write(&path, render(transcript, format, meta)).map_err(|e| ScrybeError::Io {
+        let io_error = |e: std::io::Error| ScrybeError::Io {
             detail: format!("could not write {}: {e}", path.display()),
+        };
+        let mut tmp = path.clone().into_os_string();
+        tmp.push(format!(".{}.tmp", std::process::id()));
+        let tmp = PathBuf::from(tmp);
+        std::fs::write(&tmp, render(transcript, format, meta)).map_err(io_error)?;
+        std::fs::rename(&tmp, &path).map_err(|e| {
+            let _ = std::fs::remove_file(&tmp);
+            io_error(e)
         })?;
         written.push(path);
     }
@@ -122,9 +132,31 @@ fn output_path(input: &Path, format: Format, out_dir: Option<&Path>) -> PathBuf 
     dir.join(name)
 }
 
+/// Machine-format speaker label (`SPEAKER_00`), the WhisperX-compatible
+/// spelling downstream tooling greps for.
+fn speaker_label(speaker: usize) -> String {
+    format!("SPEAKER_{speaker:02}")
+}
+
+/// Human-format speaker name (`Speaker 1`), used by txt/srt prefixes and VTT
+/// voice tags.
+fn speaker_name(speaker: usize) -> String {
+    format!("Speaker {}", speaker + 1)
+}
+
+/// Whether any segment carries a speaker — the switch for the extra tabular
+/// column, so undiarized output stays byte-identical to earlier releases.
+fn has_speakers(transcript: &Transcript) -> bool {
+    transcript.segments.iter().any(|s| s.speaker.is_some())
+}
+
 fn render_txt(transcript: &Transcript) -> String {
     let mut out = String::new();
     for segment in &transcript.segments {
+        if let Some(speaker) = segment.speaker {
+            out.push_str(&speaker_name(speaker));
+            out.push_str(": ");
+        }
         out.push_str(&segment.text);
         out.push('\n');
     }
@@ -134,6 +166,10 @@ fn render_txt(transcript: &Transcript) -> String {
 fn render_srt(transcript: &Transcript) -> String {
     let mut out = String::new();
     for (index, segment) in sanitized(&transcript.segments).into_iter().enumerate() {
+        let text = match segment.speaker {
+            Some(speaker) => format!("{}: {}", speaker_name(speaker), segment.text),
+            None => segment.text.to_owned(),
+        };
         // Writing into a String is infallible.
         let _ = writeln!(
             out,
@@ -141,7 +177,7 @@ fn render_srt(transcript: &Transcript) -> String {
             index + 1,
             timestamp(segment.start, ','),
             timestamp(segment.end, ','),
-            segment.text,
+            text,
         );
     }
     out
@@ -150,41 +186,72 @@ fn render_srt(transcript: &Transcript) -> String {
 fn render_vtt(transcript: &Transcript) -> String {
     let mut out = String::from("WEBVTT\n\n");
     for segment in sanitized(&transcript.segments) {
+        let text = match segment.speaker {
+            // The WebVTT voice span: players label and style the speaker.
+            Some(speaker) => format!("<v {}>{}", speaker_name(speaker), segment.text),
+            None => segment.text.to_owned(),
+        };
         let _ = writeln!(
             out,
             "{} --> {}\n{}\n",
             timestamp(segment.start, '.'),
             timestamp(segment.end, '.'),
-            segment.text,
+            text,
         );
     }
     out
 }
 
 fn render_tsv(transcript: &Transcript) -> String {
-    let mut out = String::from("start\tend\ttext\n");
+    let speakers = has_speakers(transcript);
+    let mut out = String::from(if speakers {
+        "start\tend\ttext\tspeaker\n"
+    } else {
+        "start\tend\ttext\n"
+    });
     for segment in sanitized(&transcript.segments) {
-        let _ = writeln!(
+        let _ = write!(
             out,
             "{}\t{}\t{}",
             (segment.start * 1000.0).round() as i64,
             (segment.end * 1000.0).round() as i64,
             segment.text,
         );
+        if speakers {
+            let _ = write!(
+                out,
+                "\t{}",
+                segment.speaker.map(speaker_label).unwrap_or_default()
+            );
+        }
+        out.push('\n');
     }
     out
 }
 
 fn render_csv(transcript: &Transcript) -> String {
-    let mut out = String::from("start,end,text\n");
+    let speakers = has_speakers(transcript);
+    let mut out = String::from(if speakers {
+        "start,end,text,speaker\n"
+    } else {
+        "start,end,text\n"
+    });
     for segment in sanitized(&transcript.segments) {
-        let _ = writeln!(
+        let _ = write!(
             out,
             "{},{},{}",
             (segment.start * 1000.0).round() as i64,
             (segment.end * 1000.0).round() as i64,
             csv_field(segment.text),
         );
+        if speakers {
+            let _ = write!(
+                out,
+                ",{}",
+                segment.speaker.map(speaker_label).unwrap_or_default()
+            );
+        }
+        out.push('\n');
     }
     out
 }
@@ -209,6 +276,10 @@ fn render_json(transcript: &Transcript, meta: &Meta<'_>) -> String {
         start: f64,
         end: f64,
         text: &'a str,
+        // Optional, additive — present only with `--diarize`, so existing
+        // consumers and `schema_version` are unaffected when absent.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        speaker: Option<String>,
         // Optional, additive — present only with word timestamps (JSON output), so
         // existing consumers and `schema_version` are unaffected when absent.
         #[serde(skip_serializing_if = "Vec::is_empty")]
@@ -219,6 +290,8 @@ fn render_json(transcript: &Transcript, meta: &Meta<'_>) -> String {
         start: f64,
         end: f64,
         text: &'a str,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        speaker: Option<String>,
     }
 
     let doc = Doc {
@@ -232,6 +305,7 @@ fn render_json(transcript: &Transcript, meta: &Meta<'_>) -> String {
                 start: s.start,
                 end: s.end,
                 text: s.text,
+                speaker: s.speaker.map(speaker_label),
                 words: s
                     .words
                     .iter()
@@ -239,6 +313,7 @@ fn render_json(transcript: &Transcript, meta: &Meta<'_>) -> String {
                         start: w.start,
                         end: w.end,
                         text: &w.text,
+                        speaker: w.speaker.map(speaker_label),
                     })
                     .collect(),
             })
@@ -254,6 +329,7 @@ struct Timed<'a> {
     end: f64,
     text: &'a str,
     words: &'a [Word],
+    speaker: Option<usize>,
 }
 
 /// Clamp timestamps non-negative, keep `end >= start`, and push each start to at
@@ -271,6 +347,7 @@ fn sanitized(segments: &[Segment]) -> Vec<Timed<'_>> {
             end,
             text: &segment.text,
             words: &segment.words,
+            speaker: segment.speaker,
         });
     }
     out
@@ -300,16 +377,19 @@ mod tests {
                     start: 0.0,
                     end: 1.5,
                     text: "Hello world".to_owned(),
+                    speaker: None,
                     words: vec![
                         Word {
                             start: 0.0,
                             end: 0.7,
                             text: "Hello".to_owned(),
+                            speaker: None,
                         },
                         Word {
                             start: 0.7,
                             end: 1.5,
                             text: "world".to_owned(),
+                            speaker: None,
                         },
                     ],
                 },
@@ -318,6 +398,7 @@ mod tests {
                     end: 3.0,
                     text: "second line".to_owned(),
                     words: vec![],
+                    speaker: None,
                 },
             ],
         }
@@ -340,12 +421,14 @@ mod tests {
                     end: 2.0,
                     text: "a".to_owned(),
                     words: vec![],
+                    speaker: None,
                 },
                 Segment {
                     start: 1.0,
                     end: 0.5,
                     text: "b".to_owned(),
                     words: vec![],
+                    speaker: None,
                 },
             ],
         };
@@ -367,12 +450,14 @@ mod tests {
                 end: 2.0,
                 text: "a".to_owned(),
                 words: vec![],
+                speaker: None,
             },
             Segment {
                 start: 1.0,
                 end: 0.5,
                 text: "b".to_owned(),
                 words: vec![],
+                speaker: None,
             },
         ];
         let timed = sanitized(&messy);

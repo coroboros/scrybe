@@ -12,8 +12,11 @@ mod clustering;
 mod embedding;
 mod fbank;
 mod frames;
+mod merge;
 mod powerset;
 mod session;
+
+pub use merge::assign_speakers;
 
 use std::path::Path;
 

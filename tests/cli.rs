@@ -741,3 +741,103 @@ fn skills_get_unknown_name_exits_usage_error() {
         .stderr(predicate::str::contains("unknown skill `bogus`"))
         .stderr(predicate::str::contains("scrybe"));
 }
+
+#[test]
+fn speakers_without_diarize_is_a_usage_error() {
+    scrybe()
+        .args(["--speakers", "2", "tests/fixtures/speech/en.wav"])
+        .assert()
+        .failure()
+        .code(2)
+        .stderr(predicate::str::contains("--diarize"));
+}
+
+#[test]
+fn dry_run_diarize_reports_model_status_without_downloading() {
+    // A fresh, empty HF cache: the plan must name both diarization models as
+    // pending downloads and fetch nothing.
+    let cache = tempfile::tempdir().unwrap();
+    scrybe()
+        .env("HF_HOME", cache.path())
+        .args(["--dry-run", "--diarize", "tests/fixtures/speech/en.wav"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("diarization/segmentation"))
+        .stdout(predicate::str::contains("diarization/embedding"))
+        .stdout(predicate::str::contains("not cached"));
+    let downloaded = std::fs::read_dir(cache.path())
+        .map(|entries| entries.count())
+        .unwrap_or(0);
+    assert_eq!(downloaded, 0, "--dry-run must not touch the network");
+}
+
+#[test]
+fn offline_diarize_without_cache_exits_11_with_the_pull_hint() {
+    let cache = tempfile::tempdir().unwrap();
+    scrybe()
+        .env("HF_HOME", cache.path())
+        .args(["--offline", "--diarize", "tests/fixtures/speech/en.wav"])
+        .assert()
+        .failure()
+        .code(11)
+        .stderr(predicate::str::contains("models pull diarization"));
+}
+
+#[test]
+fn models_list_includes_the_diarization_pair() {
+    scrybe()
+        .args(["models", "list"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("diarization"))
+        .stdout(predicate::str::contains("--diarize"));
+}
+
+#[test]
+fn diarize_json_carries_two_speaker_labels_end_to_end() {
+    // The whole CLI path on the committed two-voice fixture: transcription
+    // (tiny) + diarization + merge + JSON rendering.
+    if common::require_model_or_skip().is_none() || !common::require_diarize_or_skip() {
+        return;
+    }
+    let output = scrybe()
+        .args([
+            "--diarize",
+            "--json",
+            "tests/fixtures/speech/two-speakers.wav",
+        ])
+        .assert()
+        .success();
+    let stdout = String::from_utf8_lossy(&output.get_output().stdout).into_owned();
+    let doc: serde_json::Value = serde_json::from_str(&stdout).expect("clean JSON on stdout");
+    assert_eq!(doc["schema_version"], 1, "additive fields keep the schema");
+    let speakers: std::collections::HashSet<&str> = doc["segments"]
+        .as_array()
+        .expect("segments array")
+        .iter()
+        .filter_map(|s| s["speaker"].as_str())
+        .collect();
+    assert!(
+        speakers.contains("SPEAKER_00") && speakers.contains("SPEAKER_01"),
+        "expected two speaker labels, got {speakers:?}"
+    );
+}
+
+#[test]
+fn undiarized_json_never_carries_speaker_keys() {
+    if common::require_model_or_skip().is_none() {
+        return;
+    }
+    let output = scrybe()
+        .args(["--json", "tests/fixtures/speech/en.wav"])
+        .assert()
+        .success();
+    let stdout = String::from_utf8_lossy(&output.get_output().stdout).into_owned();
+    let doc: serde_json::Value = serde_json::from_str(&stdout).expect("clean JSON on stdout");
+    for segment in doc["segments"].as_array().expect("segments array") {
+        assert!(
+            segment.get("speaker").is_none(),
+            "speaker key must be absent without --diarize: {segment}"
+        );
+    }
+}

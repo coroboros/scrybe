@@ -15,6 +15,7 @@ use rayon::prelude::*;
 
 use crate::cli::{Decoder, Format};
 use crate::color;
+use crate::diarize::{self, DiarizeOptions, Diarizer};
 use crate::engine::{Backend, Engine, TranscribeOptions};
 use crate::error::ScrybeError;
 use crate::{audio, output};
@@ -155,7 +156,13 @@ fn interrupt_flag() -> &'static Arc<AtomicBool> {
 /// Run the batch. Returns the process exit code: 0 all clear, 20 partial failure.
 /// Safe to call more than once per process: the SIGINT handler is installed once over
 /// a shared flag, reset at the start of each run, so every run observes Ctrl-C.
-pub fn run(engine: &Engine, files: &[PathBuf], cfg: &Config<'_>) -> Result<i32, ScrybeError> {
+pub fn run(
+    engine: &Engine,
+    files: &[PathBuf],
+    cfg: &Config<'_>,
+    mut diarize: Option<(&mut Diarizer, DiarizeOptions)>,
+) -> Result<i32, ScrybeError> {
+    let diarize_active = diarize.is_some();
     let interrupted = Arc::clone(interrupt_flag());
     interrupted.store(false, Ordering::SeqCst);
 
@@ -193,22 +200,54 @@ pub fn run(engine: &Engine, files: &[PathBuf], cfg: &Config<'_>) -> Result<i32, 
             bar.enable_steady_tick(Duration::from_millis(120));
 
             let started = Instant::now();
-            let (duration, outcome) = transcribe_one(engine, file, decoded, cfg, &bar);
+            let result = transcribe_one(
+                engine,
+                file,
+                decoded,
+                cfg,
+                &bar,
+                diarize.as_mut().map(|(d, o)| (&mut **d, &*o)),
+                &interrupted,
+            );
             bar.finish_and_clear();
             aggregate.inc(1);
 
-            results[index] = Some(FileResult {
-                name,
-                duration,
-                wall: started.elapsed().as_secs_f64(),
-                outcome,
-            });
+            // `None` = interrupted between transcription and diarization: the
+            // file wrote nothing and must not count as processed.
+            if let Some((duration, outcome)) = result {
+                results[index] = Some(FileResult {
+                    name,
+                    duration,
+                    wall: started.elapsed().as_secs_f64(),
+                    outcome,
+                });
+            }
         },
     )?;
     aggregate.finish_and_clear();
 
     let interrupted = interrupted.load(Ordering::SeqCst);
     print_summary(&results, interrupted);
+    // The freshness check is mtime-only and knows nothing about options: a
+    // re-run that adds --diarize would silently skip everything. Say so.
+    if diarize_active {
+        let skipped = results
+            .iter()
+            .flatten()
+            .filter(|r| matches!(r.outcome, Outcome::Skipped))
+            .count();
+        if skipped > 0 {
+            anstream::eprintln!(
+                "{}",
+                color::paint(
+                    color::WARN,
+                    &format!(
+                        "{skipped} up-to-date output(s) skipped without speakers — rerun with --force to add them"
+                    ),
+                )
+            );
+        }
+    }
     batch_exit_code(&results, interrupted, files.len())
 }
 
@@ -279,17 +318,23 @@ fn batch_exit_code(
     }
 }
 
+/// Transcribe (and optionally diarize) one decoded file. Returns `None` when
+/// the run was interrupted between the transcription and diarization stages —
+/// nothing was written, so the file must not count as processed.
+#[allow(clippy::too_many_arguments)]
 fn transcribe_one(
     engine: &Engine,
     file: &std::path::Path,
     decoded: DecodeMsg,
     cfg: &Config<'_>,
     bar: &ProgressBar,
-) -> (f64, Outcome) {
+    diarize: Option<(&mut Diarizer, &DiarizeOptions)>,
+    interrupted: &AtomicBool,
+) -> Option<(f64, Outcome)> {
     let pcm = match decoded {
         DecodeMsg::Pcm(pcm) => pcm,
-        DecodeMsg::Skip => return (0.0, Outcome::Skipped),
-        DecodeMsg::Failed(e) => return (0.0, Outcome::Failed(e.to_string())),
+        DecodeMsg::Skip => return Some((0.0, Outcome::Skipped)),
+        DecodeMsg::Failed(e) => return Some((0.0, Outcome::Failed(e.to_string()))),
     };
     let duration = pcm.duration_secs();
     let progress_bar = bar.clone();
@@ -302,23 +347,35 @@ fn transcribe_one(
             progress_bar.set_message(rt);
         }
     };
-    let transcript = match engine.transcribe(&pcm.samples, &cfg.options, on_progress) {
+    let mut transcript = match engine.transcribe(&pcm.samples, &cfg.options, on_progress) {
         Ok(t) => t,
-        Err(e) => return (duration, Outcome::Failed(e.to_string())),
+        Err(e) => return Some((duration, Outcome::Failed(e.to_string()))),
     };
+    if let Some((diarizer, options)) = diarize {
+        // A Ctrl-C between the stages stops before diarization rather than
+        // writing output the user would read as diarized.
+        if interrupted.load(Ordering::SeqCst) {
+            return None;
+        }
+        bar.set_message("diarizing");
+        match diarizer.diarize(&pcm.samples, options) {
+            Ok(turns) => diarize::assign_speakers(&mut transcript, &turns),
+            Err(e) => return Some((duration, Outcome::Failed(e.to_string()))),
+        }
+    }
     let meta = output::Meta {
         model: cfg.model,
         duration,
     };
     match output::write_outputs(&transcript, file, cfg.formats, cfg.out_dir, &meta) {
-        Ok(outputs) => (
+        Ok(outputs) => Some((
             duration,
             Outcome::Done {
                 outputs,
                 language: transcript.language,
             },
-        ),
-        Err(e) => (duration, Outcome::Failed(e.to_string())),
+        )),
+        Err(e) => Some((duration, Outcome::Failed(e.to_string()))),
     }
 }
 

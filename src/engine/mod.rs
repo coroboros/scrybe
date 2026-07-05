@@ -58,6 +58,9 @@ pub struct Segment {
     /// Per-word timing, populated only when [`TranscribeOptions::word_timestamps`]
     /// is set (JSON output); empty otherwise.
     pub words: Vec<Word>,
+    /// Global speaker index, attached by diarization; `None` without `--diarize`
+    /// or when no diarized turn overlaps the segment.
+    pub speaker: Option<usize>,
 }
 
 #[derive(Debug, Clone)]
@@ -65,6 +68,8 @@ pub struct Word {
     pub start: f64,
     pub end: f64,
     pub text: String,
+    /// Global speaker index, attached by diarization (JSON output only).
+    pub speaker: Option<usize>,
 }
 
 /// A finished transcript plus the language that was used or detected.
@@ -228,6 +233,7 @@ fn filter_segments(
                 end: end_cs as f64 / 100.0,
                 text,
                 words,
+                speaker: None,
             })
         })
         .collect()
@@ -258,6 +264,7 @@ fn group_words(tokens: impl IntoIterator<Item = (String, i64, i64)>) -> Vec<Word
                 start,
                 end,
                 text: text.trim_start().to_owned(),
+                speaker: None,
             }),
         }
     }

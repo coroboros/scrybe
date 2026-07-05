@@ -83,6 +83,15 @@ pub struct Cli {
     #[arg(long)]
     pub offline: bool,
 
+    /// Label who spoke: run speaker diarization and carry speakers into every
+    /// output format.
+    #[arg(long)]
+    pub diarize: bool,
+
+    /// Exact number of speakers; auto-detected when omitted.
+    #[arg(long, value_name = "N", requires = "diarize")]
+    pub speakers: Option<std::num::NonZeroUsize>,
+
     #[command(subcommand)]
     pub command: Option<Command>,
 }
@@ -137,14 +146,64 @@ pub enum SkillsAction {
 
 #[derive(Debug, Subcommand)]
 pub enum ModelsAction {
-    /// List the known Whisper models, sizes, and which are cached.
+    /// List the known models, sizes, and which are cached.
     List,
     /// Download a model into the cache.
-    Pull { model: Model },
+    Pull { model: ModelRef },
     /// Remove a cached model.
-    Remove { model: Model },
+    Remove { model: ModelRef },
     /// Print the model cache directory.
     Path,
+}
+
+/// What `models pull`/`models remove` can name: any Whisper model, or the
+/// diarization pair (speaker segmentation + embedding, fetched together).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+pub enum ModelRef {
+    #[value(name = "tiny")]
+    Tiny,
+    #[value(name = "base")]
+    Base,
+    #[value(name = "small")]
+    Small,
+    #[value(name = "large-v3")]
+    LargeV3,
+    #[value(name = "large-v3-turbo")]
+    LargeV3Turbo,
+    #[value(name = "distil-large-v3.5")]
+    DistilLargeV35,
+    #[value(name = "diarization")]
+    Diarization,
+}
+
+impl ModelRef {
+    /// The Whisper model this names, or `None` for the diarization pair.
+    pub fn whisper(self) -> Option<Model> {
+        match self {
+            Self::Tiny => Some(Model::Tiny),
+            Self::Base => Some(Model::Base),
+            Self::Small => Some(Model::Small),
+            Self::LargeV3 => Some(Model::LargeV3),
+            Self::LargeV3Turbo => Some(Model::LargeV3Turbo),
+            Self::DistilLargeV35 => Some(Model::DistilLargeV35),
+            Self::Diarization => None,
+        }
+    }
+}
+
+/// Exhaustive by construction: a new `Model` variant fails to compile here
+/// until `ModelRef` learns it, keeping the two enums in lockstep.
+impl From<Model> for ModelRef {
+    fn from(model: Model) -> Self {
+        match model {
+            Model::Tiny => Self::Tiny,
+            Model::Base => Self::Base,
+            Model::Small => Self::Small,
+            Model::LargeV3 => Self::LargeV3,
+            Model::LargeV3Turbo => Self::LargeV3Turbo,
+            Model::DistilLargeV35 => Self::DistilLargeV35,
+        }
+    }
 }
 
 /// The Whisper model family scrybe can run.
@@ -208,7 +267,7 @@ macro_rules! display_via_value_enum {
     )+};
 }
 
-display_via_value_enum!(Model, Task, Format, Decoder);
+display_via_value_enum!(Model, ModelRef, Task, Format, Decoder);
 
 #[cfg(test)]
 mod tests {
@@ -221,6 +280,27 @@ mod tests {
         assert_eq!(cli.effective_formats(), vec![Format::Txt, Format::Srt]);
         let json = Cli::try_parse_from(["scrybe", "--json", "--format", "srt", "x.wav"]).unwrap();
         assert_eq!(json.effective_formats(), vec![Format::Json]);
+    }
+
+    #[test]
+    fn speakers_requires_diarize() {
+        assert!(Cli::try_parse_from(["scrybe", "--speakers", "2", "x.wav"]).is_err());
+        assert!(Cli::try_parse_from(["scrybe", "--diarize", "--speakers", "2", "x.wav"]).is_ok());
+        // Zero speakers is rejected at parse time (NonZeroUsize).
+        assert!(Cli::try_parse_from(["scrybe", "--diarize", "--speakers", "0", "x.wav"]).is_err());
+    }
+
+    #[test]
+    fn model_ref_names_mirror_model_names() {
+        // Every Whisper model keeps its exact CLI name under `models pull`;
+        // the round-trip pins the two enums together beyond the From impl.
+        for model in Model::value_variants() {
+            let reference: ModelRef = (*model).into();
+            assert_eq!(reference.to_string(), model.to_string());
+            assert_eq!(reference.whisper(), Some(*model));
+        }
+        assert_eq!(ModelRef::Diarization.whisper(), None);
+        assert_eq!(ModelRef::Diarization.to_string(), "diarization");
     }
 
     #[test]

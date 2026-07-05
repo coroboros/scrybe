@@ -65,3 +65,22 @@ pub fn require_ffmpeg_or_skip() -> bool {
     eprintln!("skipping: ffmpeg not on PATH");
     false
 }
+
+/// Like [`require_model_or_skip`] for the diarization pair: a clean skip when
+/// either model is missing, but a hard failure under `SCRYBE_REQUIRE_DIARIZE`
+/// (CI pre-fetches both), so the diarization path can never silently no-op
+/// where it is guaranteed present.
+pub fn require_diarize_or_skip() -> bool {
+    let cached = scrybe::model::diarization_status()
+        .iter()
+        .all(|(_, _, path)| path.is_some());
+    if cached {
+        return true;
+    }
+    assert!(
+        std::env::var_os("SCRYBE_REQUIRE_DIARIZE").is_none(),
+        "diarization models required (SCRYBE_REQUIRE_DIARIZE is set) but not cached — run `scrybe models pull diarization`",
+    );
+    eprintln!("skipping: diarization models not cached — run `scrybe models pull diarization`");
+    false
+}
