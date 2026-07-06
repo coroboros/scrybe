@@ -156,7 +156,6 @@ pub(crate) fn to_turns(binary: &[Vec<bool>]) -> Vec<Turn> {
             .then(a.speaker.cmp(&b.speaker))
     });
 
-    // Dense speaker ids ordered by first appearance.
     let mut remap = std::collections::HashMap::new();
     let mut next = 0usize;
     for turn in turns.iter_mut() {

@@ -15,7 +15,7 @@ use crate::error::ScrybeError;
 /// Bumped when the JSON schema changes incompatibly.
 const JSON_SCHEMA_VERSION: u32 = 1;
 
-/// Metadata recorded alongside the transcript in JSON output.
+/// Per-run metadata the format renderers read.
 pub struct Meta<'a> {
     pub model: &'a str,
     pub duration: f64,

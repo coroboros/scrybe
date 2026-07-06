@@ -5,9 +5,9 @@
 <!-- omit in toc -->
 # scrybe
 
-**Collapse sound into signal — a fast, offline Whisper transcription CLI.**
+**Collapse sound into signal — a fast, offline Whisper transcription & speaker-diarization CLI. No Python, no account.**
 
-Pure-Rust audio decode, whisper.cpp via whisper-rs, Metal on Apple Silicon and CPU everywhere. Point it at one file or a whole folder and get text back from the terminal. No Python, no system `ffmpeg`.
+Pure-Rust audio decode, whisper.cpp via whisper-rs, Metal on Apple Silicon and CPU everywhere. Point it at one file or a whole folder and get text — and who spoke — back from the terminal. No system `ffmpeg`.
 
 [![crates.io](https://img.shields.io/crates/v/coroboros-scrybe?style=flat-square&color=000000)](https://crates.io/crates/coroboros-scrybe)
 [![ci](https://img.shields.io/github/actions/workflow/status/coroboros/scrybe/ci.yml?branch=main&style=flat-square&label=ci&color=000000)](https://github.com/coroboros/scrybe/actions/workflows/ci.yml)
@@ -41,7 +41,7 @@ Pure-Rust audio decode, whisper.cpp via whisper-rs, Metal on Apple Silicon and C
 - macOS (Apple Silicon or Intel), Linux, or Windows.
 - A few hundred MB to ~8 GB of free RAM, depending on the model. scrybe auto-selects the largest model that fits detected RAM, so it runs on small machines and scales up on large ones.
 - **From a prebuilt binary** — nothing else. The binary embeds whisper.cpp and the voice-activity model.
-- **From source** — a C/C++ toolchain and CMake (whisper.cpp is built by `whisper-rs-sys`). Apple Silicon adds the Metal backend with `--features metal`.
+- **From source** — a C/C++ toolchain and CMake (whisper.cpp is built by `whisper-rs-sys`). Apple Silicon adds the Metal backend with `--features metal`. Diarization's ONNX Runtime downloads a prebuilt static lib on most targets; on Intel macOS and glibc-2.35 Linux it must be self-built (`ORT_LIB_PATH`) — the prebuilt binaries already ship it, so prefer those there.
 
 ## Install
 
