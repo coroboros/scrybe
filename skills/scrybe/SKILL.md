@@ -1,6 +1,6 @@
 ---
 name: scrybe
-description: Transcribes speech to text offline with scrybe — a fast, self-contained Whisper CLI (no Python, no system ffmpeg). Reads common audio (wav, mp3, flac, ogg) and mp4/m4a files, one file or a whole folder, and writes txt, srt, vtt, json, tsv, or csv; it also translates foreign-language speech to English in one pass. Use when someone wants a transcript, subtitles, captions, or speech-to-text from a local recording, audio file, or video — phrasings like "transcribe this", "pull the text out of this recording", "get subtitles for this video", "speech to text", "caption this audio", or "what's said in this clip".
+description: Transcribes speech to text offline with scrybe — a fast, self-contained Whisper CLI (no Python, no system ffmpeg). Reads common audio (wav, mp3, flac, ogg) and mp4/m4a files, one file or a whole folder, and writes txt, srt, vtt, json, tsv, or csv; it also labels who spoke (--diarize, offline, no account) and translates foreign-language speech to English in one pass. Use when someone wants a transcript, subtitles, captions, speaker labels, or speech-to-text from a local recording, audio file, or video — phrasings like "transcribe this", "pull the text out of this recording", "get subtitles for this video", "speech to text", "caption this audio", "who said what", or "what's said in this clip".
 ---
 
 # scrybe
@@ -36,6 +36,8 @@ scrybe ./recordings                 # a whole folder
 scrybe ./recordings --recursive     # and its subfolders
 scrybe talk.mp3 --format srt,vtt    # subtitles instead of plain text
 scrybe talk.mp3 --json              # stream a JSON transcript to stdout
+scrybe call.wav --diarize           # label who spoke, in every format
+scrybe panel.mp3 --diarize --speakers 3   # pin the speaker count
 scrybe ./in --out-dir ./out         # write outputs to ./out, not beside inputs
 scrybe --dry-run ./in               # resolve the plan without transcribing
 scrybe --offline ./in               # cached models only, no network
@@ -45,6 +47,12 @@ Defaults are zero-config: omit `--model` and `--jobs` and scrybe picks the large
 model and the concurrency that fit detected RAM. Pass `--model large-v3` for the
 most accurate model, or `--task translate` (large-v3 only) to translate to English.
 Set `--lang fr` to skip language auto-detection.
+
+`--diarize` labels speakers in every output format (`Speaker 1:` prefixes in
+txt/srt, `<v>` voice tags in vtt, a `speaker` column in tsv/csv, `SPEAKER_00`
+fields in JSON), fully offline — two small ONNX models fetch once from ungated
+mirrors, no Hugging Face account. `--speakers N` pins the count when known.
+Pre-fetch with `scrybe models pull diarization` for offline runs.
 
 ## Inputs
 
@@ -75,7 +83,9 @@ inputs write `.json` sidecars. The schema is stable and versioned:
 ```
 
 Timestamps are in seconds. Each segment carries an optional `words` array of
-per-word timing, present only with JSON output.
+per-word timing, present only with JSON output. With `--diarize`, segments and
+words carry an optional `speaker` label (`SPEAKER_00`, `SPEAKER_01`, …) —
+group segments by it to build per-speaker transcripts.
 
 ## Exit codes
 
@@ -85,6 +95,7 @@ branch on `$?`:
 - `0` success · `2` usage error (bad flag or value)
 - `10` unsupported codec (e.g. HE-AAC/SBR — re-encode or pass `--decoder ffmpeg`)
 - `11` model download failed · `12` out of memory · `14` file not found
+- `17` speaker diarization failed (re-fetch with `scrybe models pull diarization`)
 - `20` partial batch failure, or interrupted before completion
 
 On out of memory, retry with a smaller `--model` or lower `--jobs`. On a partial

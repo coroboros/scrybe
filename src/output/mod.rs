@@ -19,6 +19,10 @@ const JSON_SCHEMA_VERSION: u32 = 1;
 pub struct Meta<'a> {
     pub model: &'a str,
     pub duration: f64,
+    /// Whether `--diarize` ran. Drives the tsv/csv speaker column so a batch
+    /// keeps one schema even when a file yields no speakers (empty cells, not a
+    /// dropped column).
+    pub diarized: bool,
 }
 
 pub fn render(transcript: &Transcript, format: Format, meta: &Meta<'_>) -> String {
@@ -27,13 +31,17 @@ pub fn render(transcript: &Transcript, format: Format, meta: &Meta<'_>) -> Strin
         Format::Srt => render_srt(transcript),
         Format::Vtt => render_vtt(transcript),
         Format::Json => render_json(transcript, meta),
-        Format::Tsv => render_tsv(transcript),
-        Format::Csv => render_csv(transcript),
+        Format::Tsv => render_tsv(transcript, meta.diarized),
+        Format::Csv => render_csv(transcript, meta.diarized),
     }
 }
 
 /// Write the transcript in each requested format next to `input` (or into
-/// `out_dir`), returning the paths written.
+/// `out_dir`), returning the paths written. Each file lands via a same-dir
+/// temp + atomic rename, so a hard kill mid-write can never leave a truncated
+/// transcript behind. Rename replaces the destination inode: a symlinked
+/// output path is swapped for a regular file — durability over in-place
+/// overwrite, the right default for generated sidecars.
 pub fn write_outputs(
     transcript: &Transcript,
     input: &Path,
@@ -44,9 +52,20 @@ pub fn write_outputs(
     let mut written = Vec::new();
     for &format in formats {
         let path = output_path(input, format, out_dir);
-        std::fs::write(&path, render(transcript, format, meta)).map_err(|e| ScrybeError::Io {
+        let io_error = |e: std::io::Error| ScrybeError::Io {
             detail: format!("could not write {}: {e}", path.display()),
-        })?;
+        };
+        let mut tmp = path.clone().into_os_string();
+        tmp.push(format!(".{}.tmp", std::process::id()));
+        let tmp = PathBuf::from(tmp);
+        // Write then rename; on any failure remove the temp so a full disk or a
+        // permission fault never strands `<name>.<pid>.tmp` litter.
+        let write_then_rename = std::fs::write(&tmp, render(transcript, format, meta))
+            .and_then(|()| std::fs::rename(&tmp, &path));
+        if let Err(e) = write_then_rename {
+            let _ = std::fs::remove_file(&tmp);
+            return Err(io_error(e));
+        }
         written.push(path);
     }
     Ok(written)
@@ -122,9 +141,25 @@ fn output_path(input: &Path, format: Format, out_dir: Option<&Path>) -> PathBuf 
     dir.join(name)
 }
 
+/// Machine-format speaker label (`SPEAKER_00`), the WhisperX-compatible
+/// spelling downstream tooling greps for.
+fn speaker_label(speaker: usize) -> String {
+    format!("SPEAKER_{speaker:02}")
+}
+
+/// Human-format speaker name (`Speaker 1`), used by txt/srt prefixes and VTT
+/// voice tags.
+fn speaker_name(speaker: usize) -> String {
+    format!("Speaker {}", speaker + 1)
+}
+
 fn render_txt(transcript: &Transcript) -> String {
     let mut out = String::new();
     for segment in &transcript.segments {
+        if let Some(speaker) = segment.speaker {
+            out.push_str(&speaker_name(speaker));
+            out.push_str(": ");
+        }
         out.push_str(&segment.text);
         out.push('\n');
     }
@@ -134,6 +169,10 @@ fn render_txt(transcript: &Transcript) -> String {
 fn render_srt(transcript: &Transcript) -> String {
     let mut out = String::new();
     for (index, segment) in sanitized(&transcript.segments).into_iter().enumerate() {
+        let text = match segment.speaker {
+            Some(speaker) => format!("{}: {}", speaker_name(speaker), segment.text),
+            None => segment.text.to_owned(),
+        };
         // Writing into a String is infallible.
         let _ = writeln!(
             out,
@@ -141,50 +180,89 @@ fn render_srt(transcript: &Transcript) -> String {
             index + 1,
             timestamp(segment.start, ','),
             timestamp(segment.end, ','),
-            segment.text,
+            text,
         );
     }
     out
+}
+
+/// Escape the three characters WebVTT reads as cue markup, so a `<` or `&` in
+/// the transcript can't open an unterminated tag and swallow the rest of the
+/// cue. `&` first, or it double-escapes the entities it introduces.
+fn vtt_escape(text: &str) -> String {
+    text.replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
 }
 
 fn render_vtt(transcript: &Transcript) -> String {
     let mut out = String::from("WEBVTT\n\n");
     for segment in sanitized(&transcript.segments) {
+        let escaped = vtt_escape(segment.text);
+        let text = match segment.speaker {
+            // The WebVTT voice span: players label and style the speaker.
+            Some(speaker) => format!("<v {}>{}", speaker_name(speaker), escaped),
+            None => escaped,
+        };
         let _ = writeln!(
             out,
             "{} --> {}\n{}\n",
             timestamp(segment.start, '.'),
             timestamp(segment.end, '.'),
-            segment.text,
+            text,
         );
     }
     out
 }
 
-fn render_tsv(transcript: &Transcript) -> String {
-    let mut out = String::from("start\tend\ttext\n");
+fn render_tsv(transcript: &Transcript, diarized: bool) -> String {
+    let mut out = String::from(if diarized {
+        "start\tend\ttext\tspeaker\n"
+    } else {
+        "start\tend\ttext\n"
+    });
     for segment in sanitized(&transcript.segments) {
-        let _ = writeln!(
+        let _ = write!(
             out,
             "{}\t{}\t{}",
             (segment.start * 1000.0).round() as i64,
             (segment.end * 1000.0).round() as i64,
             segment.text,
         );
+        if diarized {
+            let _ = write!(
+                out,
+                "\t{}",
+                segment.speaker.map(speaker_label).unwrap_or_default()
+            );
+        }
+        out.push('\n');
     }
     out
 }
 
-fn render_csv(transcript: &Transcript) -> String {
-    let mut out = String::from("start,end,text\n");
+fn render_csv(transcript: &Transcript, diarized: bool) -> String {
+    let mut out = String::from(if diarized {
+        "start,end,text,speaker\n"
+    } else {
+        "start,end,text\n"
+    });
     for segment in sanitized(&transcript.segments) {
-        let _ = writeln!(
+        let _ = write!(
             out,
             "{},{},{}",
             (segment.start * 1000.0).round() as i64,
             (segment.end * 1000.0).round() as i64,
             csv_field(segment.text),
         );
+        if diarized {
+            let _ = write!(
+                out,
+                ",{}",
+                segment.speaker.map(speaker_label).unwrap_or_default()
+            );
+        }
+        out.push('\n');
     }
     out
 }
@@ -209,6 +287,10 @@ fn render_json(transcript: &Transcript, meta: &Meta<'_>) -> String {
         start: f64,
         end: f64,
         text: &'a str,
+        // Optional, additive — present only with `--diarize`, so existing
+        // consumers and `schema_version` are unaffected when absent.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        speaker: Option<String>,
         // Optional, additive — present only with word timestamps (JSON output), so
         // existing consumers and `schema_version` are unaffected when absent.
         #[serde(skip_serializing_if = "Vec::is_empty")]
@@ -219,6 +301,8 @@ fn render_json(transcript: &Transcript, meta: &Meta<'_>) -> String {
         start: f64,
         end: f64,
         text: &'a str,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        speaker: Option<String>,
     }
 
     let doc = Doc {
@@ -232,6 +316,7 @@ fn render_json(transcript: &Transcript, meta: &Meta<'_>) -> String {
                 start: s.start,
                 end: s.end,
                 text: s.text,
+                speaker: s.speaker.map(speaker_label),
                 words: s
                     .words
                     .iter()
@@ -239,6 +324,7 @@ fn render_json(transcript: &Transcript, meta: &Meta<'_>) -> String {
                         start: w.start,
                         end: w.end,
                         text: &w.text,
+                        speaker: w.speaker.map(speaker_label),
                     })
                     .collect(),
             })
@@ -254,6 +340,7 @@ struct Timed<'a> {
     end: f64,
     text: &'a str,
     words: &'a [Word],
+    speaker: Option<usize>,
 }
 
 /// Clamp timestamps non-negative, keep `end >= start`, and push each start to at
@@ -271,6 +358,7 @@ fn sanitized(segments: &[Segment]) -> Vec<Timed<'_>> {
             end,
             text: &segment.text,
             words: &segment.words,
+            speaker: segment.speaker,
         });
     }
     out
@@ -300,16 +388,19 @@ mod tests {
                     start: 0.0,
                     end: 1.5,
                     text: "Hello world".to_owned(),
+                    speaker: None,
                     words: vec![
                         Word {
                             start: 0.0,
                             end: 0.7,
                             text: "Hello".to_owned(),
+                            speaker: None,
                         },
                         Word {
                             start: 0.7,
                             end: 1.5,
                             text: "world".to_owned(),
+                            speaker: None,
                         },
                     ],
                 },
@@ -318,6 +409,7 @@ mod tests {
                     end: 3.0,
                     text: "second line".to_owned(),
                     words: vec![],
+                    speaker: None,
                 },
             ],
         }
@@ -340,12 +432,14 @@ mod tests {
                     end: 2.0,
                     text: "a".to_owned(),
                     words: vec![],
+                    speaker: None,
                 },
                 Segment {
                     start: 1.0,
                     end: 0.5,
                     text: "b".to_owned(),
                     words: vec![],
+                    speaker: None,
                 },
             ],
         };
@@ -367,12 +461,14 @@ mod tests {
                 end: 2.0,
                 text: "a".to_owned(),
                 words: vec![],
+                speaker: None,
             },
             Segment {
                 start: 1.0,
                 end: 0.5,
                 text: "b".to_owned(),
                 words: vec![],
+                speaker: None,
             },
         ];
         let timed = sanitized(&messy);
@@ -389,6 +485,7 @@ mod tests {
             &Meta {
                 model: "tiny",
                 duration: 3.0,
+                diarized: false,
             },
         );
         let value: serde_json::Value = serde_json::from_str(&json).unwrap();
@@ -463,8 +560,30 @@ mod tests {
     }
 
     #[test]
+    fn vtt_escapes_cue_markup_characters() {
+        // A `<` or `&` in the transcript must not open WebVTT markup and eat the
+        // rest of the cue; the `<v …>` voice tag stays literal.
+        let t = Transcript {
+            language: "en".to_owned(),
+            segments: vec![Segment {
+                start: 0.0,
+                end: 1.0,
+                text: "x < y & AT&T".to_owned(),
+                words: vec![],
+                speaker: Some(0),
+            }],
+        };
+        let vtt = render_vtt(&t);
+        assert!(
+            vtt.contains("<v Speaker 1>x &lt; y &amp; AT&amp;T"),
+            "{vtt}"
+        );
+        assert!(!vtt.contains("y & AT"), "raw ampersand leaked: {vtt}");
+    }
+
+    #[test]
     fn tsv_has_header_and_millisecond_rows() {
-        let tsv = render_tsv(&transcript());
+        let tsv = render_tsv(&transcript(), false);
         assert!(tsv.starts_with("start\tend\ttext\n"));
         assert!(tsv.contains("0\t1500\tHello world"));
         assert!(tsv.contains("1500\t3000\tsecond line"));
@@ -472,11 +591,30 @@ mod tests {
 
     #[test]
     fn csv_has_header_and_quotes_fields() {
-        let csv = render_csv(&transcript());
+        let csv = render_csv(&transcript(), false);
         assert!(csv.starts_with("start,end,text\n"));
         assert!(csv.contains("0,1500,\"Hello world\""));
         // A comma or quote in the text must not break the columns.
         assert_eq!(csv_field("a, \"b\""), "\"a, \"\"b\"\"\"");
+    }
+
+    #[test]
+    fn tabular_speaker_column_follows_the_flag_not_the_data() {
+        // A diarized-but-speakerless transcript keeps the column (empty cells),
+        // so a batch never mixes 3- and 4-column files.
+        let speakerless = transcript(); // both segments have speaker: None
+        let tsv = render_tsv(&speakerless, true);
+        assert!(tsv.starts_with("start\tend\ttext\tspeaker\n"));
+        assert!(
+            tsv.lines().nth(1).unwrap().ends_with('\t'),
+            "empty speaker cell"
+        );
+        let csv = render_csv(&speakerless, true);
+        assert!(csv.starts_with("start,end,text,speaker\n"));
+        assert!(
+            csv.lines().nth(1).unwrap().ends_with(','),
+            "empty speaker cell"
+        );
     }
 
     #[test]

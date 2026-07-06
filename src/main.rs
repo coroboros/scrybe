@@ -3,8 +3,9 @@
 use clap::{Parser, ValueEnum};
 
 use scrybe::cli::{self, Cli, Command, Model, ModelsAction, SkillsAction, Task};
+use scrybe::diarize::{DiarizeOptions, Diarizer};
 use scrybe::error::ScrybeError;
-use scrybe::{audio, batch, color, engine, model, output, skills};
+use scrybe::{audio, batch, color, diarize, engine, model, output, skills};
 
 /// Argument/usage exit code; must match clap's own (it exits 2 on parse errors).
 const USAGE_ERROR: i32 = 2;
@@ -59,9 +60,17 @@ fn transcribe(cli: &Cli) -> Result<i32, ScrybeError> {
     // RAM read once and threaded through jobs/model/guard, so a zero-config run can't
     // be refused by its own guard (both are chosen against it).
     let total_ram = model::total_memory();
-    let (jobs, clamp_note) = batch::resolve_jobs(cli.jobs, backend, total_ram);
-    let model = model::resolve_model(cli.model, total_ram, jobs);
-    model::guard_memory(model, jobs, total_ram)?;
+    // `--diarize` holds the two ONNX models resident alongside Whisper; reserve for
+    // them in jobs, model, AND guard so all three share one predicate and a
+    // zero-config diarize run is never refused by its own auto-pick.
+    let extra_resident = if cli.diarize {
+        model::DIARIZATION_RESIDENT
+    } else {
+        0
+    };
+    let (jobs, clamp_note) = batch::resolve_jobs(cli.jobs, backend, total_ram, extra_resident);
+    let model = model::resolve_model(cli.model, total_ram, jobs, extra_resident);
+    model::guard_memory(model, jobs, total_ram, extra_resident)?;
 
     if let Some(code) = validate_model_capabilities(model, cli) {
         return Ok(code);
@@ -94,6 +103,19 @@ fn transcribe(cli: &Cli) -> Result<i32, ScrybeError> {
     }
 
     if cli.dry_run {
+        if cli.diarize {
+            // Surface the pending diarization downloads without fetching.
+            for (label, size, cached) in model::diarization_status() {
+                let status = match cached {
+                    Some(path) => format!("cached — {}", path.display()),
+                    None => format!("not cached — will download {}", model::human_size(size)),
+                };
+                anstream::println!(
+                    "  diarization/{label}  {}",
+                    color::paint(color::DIM, &status)
+                );
+            }
+        }
         for file in &files {
             anstream::println!(
                 "  {}  {}",
@@ -104,10 +126,25 @@ fn transcribe(cli: &Cli) -> Result<i32, ScrybeError> {
         return Ok(0);
     }
 
+    // Diarization models resolve first: they are small, and a batch must not
+    // transcribe for hours before discovering a missing model.
+    let diarize_paths = if cli.diarize {
+        Some(model::ensure_diarization(cli.offline)?)
+    } else {
+        None
+    };
+
     let model_path = model::ensure_available(model, cli.offline)?;
     // VAD is the mandated correctness floor and is bundled, so it is always on.
     let vad_path = model::ensure_vad()?;
     let engine = engine::Engine::load(&model_path, Some(&vad_path))?;
+    let mut diarizer = match &diarize_paths {
+        Some((segmentation, embedding)) => Some(Diarizer::load(segmentation, embedding)?),
+        None => None,
+    };
+    let diarize_options = DiarizeOptions {
+        num_speakers: cli.speakers.map(std::num::NonZeroUsize::get),
+    };
 
     let threads = cli.threads.unwrap_or_else(batch::detected_parallelism);
     let options = engine::TranscribeOptions {
@@ -122,10 +159,15 @@ fn transcribe(cli: &Cli) -> Result<i32, ScrybeError> {
     // `--json` on a single file streams to stdout for piping; no batch UI.
     if cli.json && files.len() == 1 {
         let pcm = audio::load_audio(&files[0], cli.decoder)?;
-        let transcript = engine.transcribe(&pcm.samples, &options, |_| {})?;
+        let mut transcript = engine.transcribe(&pcm.samples, &options, |_| {})?;
+        if let Some(diarizer) = diarizer.as_mut() {
+            let turns = diarizer.diarize(&pcm.samples, &diarize_options)?;
+            diarize::assign_speakers(&mut transcript, &turns);
+        }
         let meta = output::Meta {
             model: &model_name,
             duration: pcm.duration_secs(),
+            diarized: cli.diarize,
         };
         anstream::println!("{}", output::render(&transcript, formats[0], &meta));
         return Ok(0);
@@ -159,8 +201,14 @@ fn transcribe(cli: &Cli) -> Result<i32, ScrybeError> {
         model: &model_name,
         force: cli.force,
         jobs,
+        diarized: cli.diarize,
     };
-    batch::run(&engine, &files, &config)
+    batch::run(
+        &engine,
+        &files,
+        &config,
+        diarizer.as_mut().map(|d| (d, diarize_options)),
+    )
 }
 
 /// Reject model + task/language combinations the model cannot serve, before any
@@ -193,22 +241,52 @@ fn run_models(action: &ModelsAction, offline: bool) -> Result<(), ScrybeError> {
             Ok(())
         }
         ModelsAction::Pull { model } => {
-            let path = model::ensure_available(*model, offline)?;
-            anstream::println!(
-                "{} {}",
-                color::paint(color::SUCCESS, "pulled"),
-                path.display()
-            );
+            match model.whisper() {
+                Some(model) => {
+                    let path = model::ensure_available(model, offline)?;
+                    anstream::println!(
+                        "{} {}",
+                        color::paint(color::SUCCESS, "pulled"),
+                        path.display()
+                    );
+                }
+                None => {
+                    let (segmentation, embedding) = model::ensure_diarization(offline)?;
+                    anstream::println!(
+                        "{} {}\n{} {}",
+                        color::paint(color::SUCCESS, "pulled"),
+                        segmentation.display(),
+                        color::paint(color::SUCCESS, "pulled"),
+                        embedding.display(),
+                    );
+                }
+            }
             Ok(())
         }
         ModelsAction::Remove { model } => {
-            match model::cached_path(*model) {
-                Some(path) => {
-                    model::evict(&path);
-                    anstream::println!("{} {model}", color::paint(color::SUCCESS, "removed"));
-                }
+            match model.whisper() {
+                Some(model) => match model::cached_path(model) {
+                    Some(path) => {
+                        model::evict(&path);
+                        anstream::println!("{} {model}", color::paint(color::SUCCESS, "removed"));
+                    }
+                    None => anstream::println!(
+                        "{} {model} is not cached",
+                        color::paint(color::DIM, "—")
+                    ),
+                },
                 None => {
-                    anstream::println!("{} {model} is not cached", color::paint(color::DIM, "—"))
+                    if model::evict_diarization() > 0 {
+                        anstream::println!(
+                            "{} diarization",
+                            color::paint(color::SUCCESS, "removed")
+                        );
+                    } else {
+                        anstream::println!(
+                            "{} diarization is not cached",
+                            color::paint(color::DIM, "—")
+                        );
+                    }
                 }
             }
             Ok(())
@@ -244,6 +322,20 @@ fn list_models() {
             model::human_size(info.size),
         );
     }
+    // The diarization pair rides the same cache and pulls under one name.
+    let status = model::diarization_status();
+    let cached = if status.iter().all(|(_, _, path)| path.is_some()) {
+        color::paint(color::SUCCESS, "cached")
+    } else {
+        color::paint(color::DIM, "—")
+    };
+    let size: u64 = status.iter().map(|(_, size, _)| size).sum();
+    anstream::println!(
+        "  {:<18} {:>9}  {cached}{}",
+        "diarization",
+        model::human_size(size),
+        color::paint(color::DIM, "  (--diarize)"),
+    );
 }
 
 /// Returns the usage code when `get` names a skill the binary does not bundle.
@@ -314,7 +406,7 @@ fn print_plan(cli: &Cli, model: Model, backend: engine::Backend, formats: &[cli:
     // Backend is in the plan so it's reported on every path, including the
     // single-file `--json` stream that returns before the batch banner.
     let config = format!(
-        "backend={} model={} task={} lang={} format={} jobs={} threads={} out-dir={} decoder={} recursive={} force={} json={} offline={} dry-run={}",
+        "backend={} model={} task={} lang={} format={} jobs={} threads={} out-dir={} decoder={} recursive={} force={} json={} offline={} diarize={} speakers={} dry-run={}",
         backend,
         model,
         cli.task,
@@ -328,6 +420,9 @@ fn print_plan(cli: &Cli, model: Model, backend: engine::Backend, formats: &[cli:
         cli.force,
         cli.json,
         cli.offline,
+        cli.diarize,
+        cli.speakers
+            .map_or_else(|| "auto".to_owned(), |n| n.to_string()),
         cli.dry_run,
     );
     // Status banner on stderr, keeping stdout clean for `--json` piping.

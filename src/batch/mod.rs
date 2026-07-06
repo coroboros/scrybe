@@ -15,6 +15,7 @@ use rayon::prelude::*;
 
 use crate::cli::{Decoder, Format};
 use crate::color;
+use crate::diarize::{self, DiarizeOptions, Diarizer};
 use crate::engine::{Backend, Engine, TranscribeOptions};
 use crate::error::ScrybeError;
 use crate::{audio, output};
@@ -50,10 +51,14 @@ fn cpu_default_jobs(cores: usize) -> usize {
 /// reservation can't by itself exceed the memory budget — otherwise a zero-config
 /// run on a high-core / modest-RAM box is refused by its own guard before decoding
 /// anything. An explicit `--jobs N` is never clamped here (user intent fails loud).
-fn auto_cpu_jobs(cores: usize, total_ram: Option<u64>) -> usize {
+fn auto_cpu_jobs(cores: usize, total_ram: Option<u64>, extra_resident: u64) -> usize {
     let base = cpu_default_jobs(cores);
     match total_ram {
-        Some(ram) => base.min(crate::model::max_jobs_fitting(ram, crate::cli::Model::Tiny)),
+        Some(ram) => base.min(crate::model::max_jobs_fitting(
+            ram,
+            crate::cli::Model::Tiny,
+            extra_resident,
+        )),
         None => base,
     }
     .max(1)
@@ -61,17 +66,19 @@ fn auto_cpu_jobs(cores: usize, total_ram: Option<u64>) -> usize {
 
 /// Resolve the concurrent-file count for the active backend. A single GPU
 /// command queue serializes inference, so more than two concurrent jobs only
-/// contend — clamp and say so. On CPU, default to half the cores (RAM-clamped).
+/// contend — clamp and say so. On CPU, default to half the cores (RAM-clamped,
+/// accounting for `extra_resident` so a zero-config `--diarize` run still fits).
 pub fn resolve_jobs(
     requested: Option<usize>,
     backend: Backend,
     total_ram: Option<u64>,
+    extra_resident: u64,
 ) -> (usize, Option<String>) {
     let cores = detected_parallelism();
     match backend {
         Backend::Cpu => (
             requested
-                .unwrap_or_else(|| auto_cpu_jobs(cores, total_ram))
+                .unwrap_or_else(|| auto_cpu_jobs(cores, total_ram, extra_resident))
                 .max(1),
             None,
         ),
@@ -110,6 +117,7 @@ pub struct Config<'a> {
     pub model: &'a str,
     pub force: bool,
     pub jobs: usize,
+    pub diarized: bool,
 }
 
 /// What the parallel decode stage hands the serial inference stage per file.
@@ -155,7 +163,13 @@ fn interrupt_flag() -> &'static Arc<AtomicBool> {
 /// Run the batch. Returns the process exit code: 0 all clear, 20 partial failure.
 /// Safe to call more than once per process: the SIGINT handler is installed once over
 /// a shared flag, reset at the start of each run, so every run observes Ctrl-C.
-pub fn run(engine: &Engine, files: &[PathBuf], cfg: &Config<'_>) -> Result<i32, ScrybeError> {
+pub fn run(
+    engine: &Engine,
+    files: &[PathBuf],
+    cfg: &Config<'_>,
+    mut diarize: Option<(&mut Diarizer, DiarizeOptions)>,
+) -> Result<i32, ScrybeError> {
+    let diarize_active = diarize.is_some();
     let interrupted = Arc::clone(interrupt_flag());
     interrupted.store(false, Ordering::SeqCst);
 
@@ -193,7 +207,15 @@ pub fn run(engine: &Engine, files: &[PathBuf], cfg: &Config<'_>) -> Result<i32, 
             bar.enable_steady_tick(Duration::from_millis(120));
 
             let started = Instant::now();
-            let (duration, outcome) = transcribe_one(engine, file, decoded, cfg, &bar);
+            let (duration, outcome) = transcribe_one(
+                engine,
+                file,
+                decoded,
+                cfg,
+                &bar,
+                diarize.as_mut().map(|(d, o)| (&mut **d, &*o)),
+                &interrupted,
+            );
             bar.finish_and_clear();
             aggregate.inc(1);
 
@@ -209,6 +231,26 @@ pub fn run(engine: &Engine, files: &[PathBuf], cfg: &Config<'_>) -> Result<i32, 
 
     let interrupted = interrupted.load(Ordering::SeqCst);
     print_summary(&results, interrupted);
+    // The freshness check is mtime-only and knows nothing about options: a
+    // re-run that adds --diarize would silently skip everything. Say so.
+    if diarize_active {
+        let skipped = results
+            .iter()
+            .flatten()
+            .filter(|r| matches!(r.outcome, Outcome::Skipped))
+            .count();
+        if skipped > 0 {
+            anstream::eprintln!(
+                "{}",
+                color::paint(
+                    color::WARN,
+                    &format!(
+                        "{skipped} up-to-date output(s) skipped without speakers — rerun with --force to add them"
+                    ),
+                )
+            );
+        }
+    }
     batch_exit_code(&results, interrupted, files.len())
 }
 
@@ -279,12 +321,16 @@ fn batch_exit_code(
     }
 }
 
+/// Transcribe (and optionally diarize) one decoded file.
+#[allow(clippy::too_many_arguments)]
 fn transcribe_one(
     engine: &Engine,
     file: &std::path::Path,
     decoded: DecodeMsg,
     cfg: &Config<'_>,
     bar: &ProgressBar,
+    diarize: Option<(&mut Diarizer, &DiarizeOptions)>,
+    interrupted: &AtomicBool,
 ) -> (f64, Outcome) {
     let pcm = match decoded {
         DecodeMsg::Pcm(pcm) => pcm,
@@ -302,22 +348,46 @@ fn transcribe_one(
             progress_bar.set_message(rt);
         }
     };
-    let transcript = match engine.transcribe(&pcm.samples, &cfg.options, on_progress) {
+    let mut transcript = match engine.transcribe(&pcm.samples, &cfg.options, on_progress) {
         Ok(t) => t,
         Err(e) => return (duration, Outcome::Failed(e.to_string())),
     };
+    // Diarization is a best-effort enhancement of a completed transcription;
+    // neither a Ctrl-C nor a runtime failure discards that work. Ctrl-C skips
+    // diarization so the run stops promptly; a diarize error is recorded and the
+    // transcript is still written (undiarized) below, but the file is reported
+    // failed so the run's exit code flags it.
+    let mut diarize_error = None;
+    if let Some((diarizer, options)) = diarize
+        && !interrupted.load(Ordering::SeqCst)
+    {
+        bar.set_message("diarizing");
+        match diarizer.diarize(&pcm.samples, options) {
+            Ok(turns) => diarize::assign_speakers(&mut transcript, &turns),
+            Err(e) => diarize_error = Some(e.to_string()),
+        }
+    }
     let meta = output::Meta {
         model: cfg.model,
         duration,
+        diarized: cfg.diarized,
     };
     match output::write_outputs(&transcript, file, cfg.formats, cfg.out_dir, &meta) {
-        Ok(outputs) => (
-            duration,
-            Outcome::Done {
-                outputs,
-                language: transcript.language,
-            },
-        ),
+        Ok(outputs) => match diarize_error {
+            Some(e) => (
+                duration,
+                Outcome::Failed(format!(
+                    "diarization failed: {e} transcript saved without speakers"
+                )),
+            ),
+            None => (
+                duration,
+                Outcome::Done {
+                    outputs,
+                    language: transcript.language,
+                },
+            ),
+        },
         Err(e) => (duration, Outcome::Failed(e.to_string())),
     }
 }
@@ -383,21 +453,21 @@ mod tests {
 
     #[test]
     fn gpu_jobs_clamped_to_two() {
-        let (jobs, note) = resolve_jobs(Some(4), Backend::Metal, None);
+        let (jobs, note) = resolve_jobs(Some(4), Backend::Metal, None, 0);
         assert_eq!(jobs, 2);
         assert!(note.is_some());
 
-        let (jobs, note) = resolve_jobs(Some(1), Backend::Metal, None);
+        let (jobs, note) = resolve_jobs(Some(1), Backend::Metal, None, 0);
         assert_eq!(jobs, 1);
         assert!(note.is_none());
     }
 
     #[test]
     fn cpu_jobs_default_and_override() {
-        assert!(resolve_jobs(None, Backend::Cpu, None).0 >= 1);
+        assert!(resolve_jobs(None, Backend::Cpu, None, 0).0 >= 1);
         // An explicit --jobs is honored as-is, never RAM-clamped (user intent).
         assert_eq!(
-            resolve_jobs(Some(3), Backend::Cpu, Some(8 * 1024 * 1024 * 1024)).0,
+            resolve_jobs(Some(3), Backend::Cpu, Some(8 * 1024 * 1024 * 1024), 0).0,
             3
         );
     }
@@ -406,24 +476,28 @@ mod tests {
     fn auto_cpu_jobs_clamps_to_what_ram_allows() {
         const GB: u64 = 1024 * 1024 * 1024;
         // 8 GiB can't reserve 8 decode buffers, so the heuristic clamps below half-cores.
-        assert!(auto_cpu_jobs(16, Some(8 * GB)) < cpu_default_jobs(16));
-        assert_eq!(auto_cpu_jobs(16, None), cpu_default_jobs(16));
+        assert!(auto_cpu_jobs(16, Some(8 * GB), 0) < cpu_default_jobs(16));
+        assert_eq!(auto_cpu_jobs(16, None, 0), cpu_default_jobs(16));
     }
 
     #[test]
     fn zero_config_cpu_run_is_never_refused() {
         // The honest guarantee: across core/RAM grids, the auto (jobs, model) pair a
-        // flag-free CPU run resolves to is never rejected by guard_memory. No skip
-        // clause — the auto job count is RAM-clamped so a fit always exists.
+        // flag-free CPU run resolves to is never rejected by guard_memory — with or
+        // without the diarization reservation. Both stages read the same
+        // extra_resident, so a fit always exists (the auto job count is RAM-clamped
+        // against tiny plus the reservation).
         const GB: u64 = 1024 * 1024 * 1024;
-        for &cores in &[2usize, 8, 16, 24, 32, 64] {
-            for &ram in &[2 * GB, 4 * GB, 8 * GB, 16 * GB] {
-                let jobs = auto_cpu_jobs(cores, Some(ram));
-                let model = crate::model::resolve_model(None, Some(ram), jobs);
-                assert!(
-                    !crate::model::would_exceed_memory(ram, model, jobs),
-                    "zero-config refused: {cores} cores / {ram} bytes → {jobs} jobs, {model}"
-                );
+        for &extra in &[0, crate::model::DIARIZATION_RESIDENT] {
+            for &cores in &[2usize, 8, 16, 24, 32, 64] {
+                for &ram in &[2 * GB, 4 * GB, 8 * GB, 16 * GB] {
+                    let jobs = auto_cpu_jobs(cores, Some(ram), extra);
+                    let model = crate::model::resolve_model(None, Some(ram), jobs, extra);
+                    assert!(
+                        crate::model::guard_memory(model, jobs, Some(ram), extra).is_ok(),
+                        "zero-config refused: extra={extra} {cores} cores / {ram} bytes → {jobs} jobs, {model}"
+                    );
+                }
             }
         }
     }

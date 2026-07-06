@@ -6,3 +6,4 @@
 set -euo pipefail
 
 cargo run --quiet -- models pull tiny
+cargo run --quiet -- models pull diarization

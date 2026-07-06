@@ -45,8 +45,6 @@ Pure-Rust audio decode, whisper.cpp via whisper-rs, Metal on Apple Silicon and C
 
 ## Install
 
-> scrybe is pre-release. Build from source today; the binary distributions below go live on the first published release.
-
 ```sh
 brew install coroboros/tap/scrybe   # macOS — the blessed path
 npx @coroboros/scrybe               # Node toolchains
@@ -68,6 +66,8 @@ A raw GitHub-release download on macOS may be quarantined — clear it with `xat
 scrybe ./recordings           # transcribe a folder
 scrybe talk.mp3 --format srt  # one file, SubRip output
 scrybe talk.mp3 --json        # stream a JSON transcript to stdout
+scrybe call.wav --diarize     # label who spoke, in every format
+scrybe panel.mp3 --diarize --speakers 3   # pin the speaker count
 scrybe --dry-run ./in         # resolve the plan without transcribing
 scrybe models list            # show the model family, sizes, cache status
 scrybe models pull large-v3   # pre-fetch a model
@@ -98,11 +98,13 @@ Running Whisper from the terminal usually means a Python environment, a system `
 | `tiny` / `base` / `small` | small and fast, lower accuracy |
 | `large-v3` | most accurate, translation-capable |
 | `large-v3-turbo` | default — near-`large-v3` accuracy, much faster |
-| `distil-large-v3.5` | distilled, fast, English-leaning |
+| `distil-large-v3.5` | distilled, fast, English-only (rejects a non-English `--lang`) |
 
 </details>
 
 Weights are ggml builds from the whisper.cpp Hugging Face repos. Only `large-v3` translates to English (`--task translate`); the gate rejects the others before any download. With `--model` omitted, scrybe resolves the largest model that fits detected RAM at the chosen job count.
+
+`--diarize` adds a pair of small ONNX models (pyannote segmentation-3.0 + a wespeaker speaker embedding, ~31 MB total), fetched from ungated Hugging Face mirrors with the same pinned-SHA-256 verification — no account, no token. Pre-fetch them with `scrybe models pull diarization`; they resolve before any transcription starts, so a missing model fails fast.
 
 On an Apple M1, `tiny` transcribes at ~31×RT on CPU and `large-v3-turbo` at ~3×RT, rising to ~8×RT on Metal. Full numbers and method: [`bench/baseline.md`](bench/baseline.md).
 
@@ -152,6 +154,8 @@ Every flag; `scrybe --help` prints the same surface.
 | `--force` | `false` | Reprocess inputs even when an up-to-date output exists. |
 | `--dry-run` | `false` | Print the resolved plan without transcribing. |
 | `--decoder <BACKEND>` | `symphonia` | `symphonia` (built-in) or `ffmpeg` (system). |
+| `--diarize` | `false` | Label who spoke; speakers land in every output format. |
+| `--speakers <N>` | auto | Exact speaker count (requires `--diarize`). |
 | `--json` | `false` | Force JSON; stream to stdout for one file, `.json` sidecars for many. |
 | `--offline` | `false` | Use only cached models; never access the network. |
 | `--no-color` | `false` | Disable colored output. |
@@ -191,16 +195,18 @@ The cache honors `HF_HOME`. Downloads are resumable and verified against a pinne
 
 | Format | Extension | Contents |
 | --- | --- | --- |
-| `txt` | `.txt` | One segment per line. |
-| `srt` | `.srt` | SubRip cues with `HH:MM:SS,mmm` timing. |
-| `vtt` | `.vtt` | WebVTT cues with `HH:MM:SS.mmm` timing. |
-| `tsv` | `.tsv` | `start`, `end` (milliseconds), `text` columns. |
-| `csv` | `.csv` | `start`, `end` (milliseconds), `text` — RFC 4180 quoted. |
+| `txt` | `.txt` | One segment per line; `Speaker 1:` prefixes with `--diarize`. |
+| `srt` | `.srt` | SubRip cues with `HH:MM:SS,mmm` timing; `Speaker 1:` prefixes with `--diarize`. |
+| `vtt` | `.vtt` | WebVTT cues with `HH:MM:SS.mmm` timing; `<v Speaker 1>` voice tags with `--diarize`. |
+| `tsv` | `.tsv` | `start`, `end` (milliseconds), `text` columns; a `speaker` column with `--diarize`. |
+| `csv` | `.csv` | `start`, `end` (milliseconds), `text` — RFC 4180 quoted; a `speaker` column with `--diarize`. |
 | `json` | `.json` | Stable versioned schema — model, language, duration, segments. |
 
 </details>
 
 Subtitle timestamps are sanitized: never negative, never overlapping. JSON carries a `schema_version` so downstream tooling can pin it.
+
+Speaker labels differ by audience: the human formats (txt, srt, vtt) read `Speaker 1`, `Speaker 2`, … while the machine formats (json, tsv, csv) use `SPEAKER_00`, `SPEAKER_01`, … — WhisperX-compatible and zero-indexed, so the same speaker is `Speaker 1` in a subtitle and `SPEAKER_00` in the JSON.
 
 <details>
 <summary>JSON schema</summary>
@@ -218,16 +224,17 @@ Subtitle timestamps are sanitized: never negative, never overlapping. JSON carri
       "start": 0.0,
       "end": 2.4,
       "text": "the quick brown fox",
+      "speaker": "SPEAKER_00",
       "words": [
-        { "start": 0.0, "end": 0.5, "text": "the" },
-        { "start": 0.5, "end": 1.1, "text": "quick" }
+        { "start": 0.0, "end": 0.5, "text": "the", "speaker": "SPEAKER_00" },
+        { "start": 0.5, "end": 1.1, "text": "quick", "speaker": "SPEAKER_00" }
       ]
     }
   ]
 }
 ```
 
-Timestamps are in seconds. Each segment carries a `words` array of per-word timing, emitted only with JSON output (the other formats carry segment-level timing only). It is additive and optional — absent on a word-less segment — so `schema_version` stays `1`.
+Timestamps are in seconds. Each segment carries a `words` array of per-word timing, emitted only with JSON output (the other formats carry segment-level timing only). `speaker` labels (`SPEAKER_00`, WhisperX-compatible) appear per segment and per word with `--diarize`. Both fields are additive and optional — absent without `--diarize` or on a word-less segment — so `schema_version` stays `1`.
 
 </details>
 
@@ -269,6 +276,7 @@ Stable across releases — only ever added, never renumbered.
 | `14` | file not found |
 | `15` | model load failed (corrupt or incompatible ggml) |
 | `16` | transcription failed (compute or decode failure) |
+| `17` | speaker diarization failed |
 | `20` | partial batch failure, or interrupted before completion |
 
 </details>
@@ -277,7 +285,7 @@ Stable across releases — only ever added, never renumbered.
 
 - **Per-file length ceiling** — decode streams to 16 kHz mono, so the source size is unbounded, but the resident output caps at ~4.6 hours per file (exit `10` beyond that). Split marathon recordings.
 - **HE-AAC/SBR** — the built-in decoder rejects it rather than mis-decode. Use `--decoder ffmpeg` or re-encode.
-- **No speaker diarization** — scrybe transcribes; it does not label who spoke. Planned for v2, alongside an alternative inference engine.
+- **Diarization trades peak accuracy for zero setup** — `--diarize` runs the pyannote 3.1 recipe fully offline with agglomerative clustering; on hard audio (heavy overlap, many similar voices) a tuned pyannote/WhisperX Python setup can still edge it out. Segments keep one dominant speaker; per-word labels in JSON carry the detail. Clustering memory grows with the recording's speech length (as in pyannote), so a multi-hour file wants a few GB of headroom.
 - **GPU backends build from source** — Metal ships in Apple Silicon prebuilts; `cuda` and `vulkan` are opt-in cargo features built locally.
 
 ## Compared to alternatives
@@ -290,13 +298,13 @@ Stable across releases — only ever added, never renumbered.
 | Native multi-codec decode, no system `ffmpeg` | no | no (16 kHz WAV / ffmpeg) | no | no | yes |
 | Apple Silicon GPU (Metal) | no (CPU/CUDA) | yes | no (CPU/CUDA) | no (CUDA) | yes |
 | Folder/batch with progress + summary | no | no | no | no | yes |
-| Output txt/srt/vtt/json/tsv/csv | yes (no csv) | yes (no tsv) | via wrapper | yes (no tsv/csv) | yes |
+| Output txt/srt/vtt/json/tsv/csv | yes (no csv) | yes (no tsv) | via wrapper | yes (no csv) | yes |
 | Zero-config model + concurrency | no | no | no | no | yes |
 | Stable exit-code contract | no | no | no | no | yes |
 | Word-level timestamps | yes | yes | yes | yes (alignment) | yes (JSON) |
-| Speaker diarization | no | no | no | yes | not yet (v2) |
+| Speaker diarization | no | no | no | yes (HF token) | yes — offline, no account |
 
-scrybe's niche is a single self-contained binary that decodes any common codec and batch-transcribes offline, with Metal acceleration, no Python environment and no system `ffmpeg`. The Python tools — [`openai-whisper`](https://github.com/openai/whisper), [`faster-whisper`](https://github.com/SYSTRAN/faster-whisper), and [`WhisperX`](https://github.com/m-bain/whisperX) — are richer (word-level timestamps, and diarization in WhisperX) but require a Python environment, a system `ffmpeg`, and usually CUDA. [`whisper.cpp`](https://github.com/ggml-org/whisper.cpp) is the engine scrybe embeds; its own CLI expects pre-converted 16 kHz WAV (or an ffmpeg-enabled build), and leaves model selection, codec decode, batch UX, and output formatting to the caller. scrybe adds those on top, including word-level timestamps in its JSON. For speaker diarization today, reach for WhisperX; scrybe plans it for v2.
+scrybe's niche is a single self-contained binary that decodes any common codec, batch-transcribes offline, and labels who spoke — with Metal acceleration, no Python environment, no system `ffmpeg`, and no Hugging Face account. The Python tools — [`openai-whisper`](https://github.com/openai/whisper), [`faster-whisper`](https://github.com/SYSTRAN/faster-whisper), and [`WhisperX`](https://github.com/m-bain/whisperX) — require a Python environment, a system `ffmpeg`, and usually CUDA; WhisperX diarization additionally needs an HF token with gated-model access, and its tuned pipeline can still win on the hardest multi-speaker audio. [`whisper.cpp`](https://github.com/ggml-org/whisper.cpp) is the engine scrybe embeds; its own CLI expects pre-converted 16 kHz WAV (or an ffmpeg-enabled build), and leaves model selection, codec decode, batch UX, and output formatting to the caller. scrybe adds those on top.
 
 ## Contributing
 

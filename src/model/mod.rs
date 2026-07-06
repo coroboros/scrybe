@@ -28,6 +28,32 @@ macro_rules! vad_file {
 const VAD_FILE: &str = vad_file!();
 const VAD_SHA256: &str = "29940d98d42b91fbd05ce489f3ecf7c72f0a42f027e4875919a28fb4c04ea2cf";
 
+/// The pyannote segmentation-3.0 speaker-diarization model (MIT), via the ungated
+/// onnx-community ONNX export — the upstream pyannote repo gates downloads behind a
+/// Hugging Face account, which would break scrybe's anonymous fetch.
+const SEGMENTATION_REPO: &str = "onnx-community/pyannote-segmentation-3.0";
+const SEGMENTATION_FILE: &str = "onnx/model.onnx";
+const SEGMENTATION_SHA256: &str =
+    "057ee564753071c0b09b5b611648b50ac188d50846bff5f01e9f7bbf1591ea25";
+
+/// The wespeaker ResNet34-LM speaker-embedding model (CC-BY-4.0), via the
+/// ungated onnx-community ONNX export — the second half of the diarization
+/// pipeline, clustered to tell speakers apart across windows.
+const EMBEDDING_REPO: &str = "onnx-community/wespeaker-voxceleb-resnet34-LM";
+const EMBEDDING_FILE: &str = "onnx/model.onnx";
+const EMBEDDING_SHA256: &str = "3955447b0499dc9e0a4541a895df08b03c69098eba4e56c02b5603e9f7f4fcbb";
+
+const SEGMENTATION_SIZE: u64 = 5_986_908;
+const EMBEDDING_SIZE: u64 = 26_535_549;
+
+/// Extra resident memory a diarizing run holds beyond the Whisper context:
+/// both ONNX models plus ONNX Runtime session arenas. Deliberately generous,
+/// in the guard's permissive spirit. It does NOT cover the agglomerative
+/// clustering working set, which grows with the recording's speech length
+/// (O(n²) in embeddings, matching pyannote) and is unknown until decode — a
+/// multi-hour file can exceed this; see the README diarization limitation.
+pub const DIARIZATION_RESIDENT: u64 = 256 * 1024 * 1024;
+
 /// Static metadata for one model: where to fetch it and what it can do.
 pub struct ModelInfo {
     pub repo: &'static str,
@@ -132,16 +158,24 @@ const fn memory_budget(total_ram: u64) -> u64 {
 }
 
 /// Whether transcribing `model` at `jobs` would exceed the memory budget.
-pub(crate) fn would_exceed_memory(total_ram: u64, model: Model, jobs: usize) -> bool {
-    estimated_memory(model, jobs) > memory_budget(total_ram)
+/// `extra_resident` covers anything held alongside Whisper (the diarization
+/// models under `--diarize`); it must be the same value the guard enforces so
+/// auto-selection and the guard share one predicate.
+pub(crate) fn would_exceed_memory(
+    total_ram: u64,
+    model: Model,
+    jobs: usize,
+    extra_resident: u64,
+) -> bool {
+    estimated_memory(model, jobs).saturating_add(extra_resident) > memory_budget(total_ram)
 }
 
 /// The largest model that fits at `jobs` concurrent jobs, for the smart default and
-/// guard hints. Selecting at the job count the run will actually use means a
-/// self-chosen default can never be refused by its own guard.
-pub(crate) fn largest_fitting(total_ram: u64, jobs: usize) -> Model {
+/// guard hints. Selecting at the job count and reservation the run will actually use
+/// means a self-chosen default can never be refused by its own guard.
+pub(crate) fn largest_fitting(total_ram: u64, jobs: usize, extra_resident: u64) -> Model {
     for model in [Model::LargeV3Turbo, Model::Small, Model::Base, Model::Tiny] {
-        if !would_exceed_memory(total_ram, model, jobs) {
+        if !would_exceed_memory(total_ram, model, jobs, extra_resident) {
             return model;
         }
     }
@@ -150,19 +184,28 @@ pub(crate) fn largest_fitting(total_ram: u64, jobs: usize) -> Model {
 
 /// Resolve the model to run: an explicit `--model` is honored as-is (and later
 /// guarded, so an oversized explicit pick still fails loud); when omitted, pick the
-/// largest model that fits detected RAM *at the resolved job count*, falling back to
-/// the nominal default when memory can't be read.
-pub fn resolve_model(explicit: Option<Model>, total_ram: Option<u64>, jobs: usize) -> Model {
-    explicit.unwrap_or_else(|| total_ram.map_or(DEFAULT_MODEL, |ram| largest_fitting(ram, jobs)))
+/// largest model that fits detected RAM *at the resolved job count and reservation*,
+/// falling back to the nominal default when memory can't be read.
+pub fn resolve_model(
+    explicit: Option<Model>,
+    total_ram: Option<u64>,
+    jobs: usize,
+    extra_resident: u64,
+) -> Model {
+    explicit.unwrap_or_else(|| {
+        total_ram.map_or(DEFAULT_MODEL, |ram| {
+            largest_fitting(ram, jobs, extra_resident)
+        })
+    })
 }
 
 /// The most jobs at which `model` still fits `total_ram` (at least 1). The decode
 /// reservation grows `DECODE_BUFFER` per job, so `cores/2` on a big box can exceed
 /// RAM on its own; the auto job count is clamped to this against the smallest model
 /// so a zero-config run is never refused by its own guard.
-pub(crate) fn max_jobs_fitting(total_ram: u64, model: Model) -> usize {
+pub(crate) fn max_jobs_fitting(total_ram: u64, model: Model, extra_resident: u64) -> usize {
     let budget = memory_budget(total_ram);
-    let resident = resident_memory(model);
+    let resident = resident_memory(model).saturating_add(extra_resident);
     ((budget.saturating_sub(resident) / DECODE_BUFFER) as usize).max(1)
 }
 
@@ -177,19 +220,25 @@ pub fn total_memory() -> Option<u64> {
 }
 
 /// Refuse to run when the model plus job count would not fit in memory. Takes the
-/// detected total so the whole run reads RAM once.
-pub fn guard_memory(model: Model, jobs: usize, total: Option<u64>) -> Result<(), ScrybeError> {
+/// detected total so the whole run reads RAM once. `extra_resident` reserves
+/// space for anything loaded alongside Whisper (the diarization models).
+pub fn guard_memory(
+    model: Model,
+    jobs: usize,
+    total: Option<u64>,
+    extra_resident: u64,
+) -> Result<(), ScrybeError> {
     let Some(total) = total else {
         return Ok(());
     };
-    if would_exceed_memory(total, model, jobs) {
-        let need = human_size(estimated_memory(model, jobs));
+    if would_exceed_memory(total, model, jobs, extra_resident) {
+        let need = human_size(estimated_memory(model, jobs).saturating_add(extra_resident));
         let have = human_size(total);
-        // Recommend a model that fits at the SAME job count, so the hint never names
-        // the model just refused. When nothing fits, point at lowering jobs instead of
-        // quoting `largest_fitting`'s non-fitting fallback.
-        let fits = largest_fitting(total, jobs);
-        let detail = if would_exceed_memory(total, fits, jobs) {
+        // Recommend a model that fits at the SAME job count and reservation, so the hint
+        // never names the model just refused. When nothing fits, point at lowering jobs
+        // instead of quoting `largest_fitting`'s non-fitting fallback.
+        let fits = largest_fitting(total, jobs, extra_resident);
+        let detail = if would_exceed_memory(total, fits, jobs, extra_resident) {
             format!(
                 "{model} at {jobs} job(s) needs ~{need}, but only {have} is available; no model fits at {jobs} job(s)"
             )
@@ -234,6 +283,62 @@ pub fn ensure_available(model: Model, offline: bool) -> Result<PathBuf, ScrybeEr
         &model.to_string(),
         offline,
     )
+}
+
+/// Ensure the speaker-segmentation model is on disk and verified, returning its
+/// path. Same fetch/verify/cache semantics as the Whisper weights.
+pub fn ensure_segmentation(offline: bool) -> Result<PathBuf, ScrybeError> {
+    fetch_verified(
+        SEGMENTATION_REPO,
+        SEGMENTATION_FILE,
+        SEGMENTATION_SHA256,
+        "diarization",
+        offline,
+    )
+}
+
+/// Ensure the speaker-embedding model is on disk and verified, returning its
+/// path.
+pub fn ensure_embedding(offline: bool) -> Result<PathBuf, ScrybeError> {
+    fetch_verified(
+        EMBEDDING_REPO,
+        EMBEDDING_FILE,
+        EMBEDDING_SHA256,
+        "diarization",
+        offline,
+    )
+}
+
+/// Ensure both diarization models are on disk and verified, returning
+/// (segmentation, embedding). Resolved at plan time so a missing model fails
+/// before any transcription starts.
+pub fn ensure_diarization(offline: bool) -> Result<(PathBuf, PathBuf), ScrybeError> {
+    Ok((ensure_segmentation(offline)?, ensure_embedding(offline)?))
+}
+
+/// The diarization pair for status displays: (label, size, cached path).
+pub fn diarization_status() -> [(&'static str, u64, Option<PathBuf>); 2] {
+    [
+        (
+            "segmentation",
+            SEGMENTATION_SIZE,
+            cached(SEGMENTATION_REPO, SEGMENTATION_FILE),
+        ),
+        (
+            "embedding",
+            EMBEDDING_SIZE,
+            cached(EMBEDDING_REPO, EMBEDDING_FILE),
+        ),
+    ]
+}
+
+/// Evict both diarization models, returning how many were actually cached.
+pub fn evict_diarization() -> usize {
+    diarization_status()
+        .into_iter()
+        .filter_map(|(_, _, path)| path)
+        .map(|path| evict(&path))
+        .count()
 }
 
 /// The Silero VAD model, bundled in the binary so the mandated correctness floor
@@ -409,10 +514,10 @@ mod tests {
         // count, but an absurd job count (decode buffers) or a too-small machine
         // is refused. (Justified deviation from a per-copy estimate — the copy
         // never happens.)
-        assert!(!would_exceed_memory(8 * GB, Model::LargeV3, 1));
-        assert!(would_exceed_memory(8 * GB, Model::LargeV3, 16));
-        assert!(would_exceed_memory(4 * GB, Model::LargeV3, 1));
-        assert!(!would_exceed_memory(8 * GB, Model::LargeV3Turbo, 1));
+        assert!(!would_exceed_memory(8 * GB, Model::LargeV3, 1, 0));
+        assert!(would_exceed_memory(8 * GB, Model::LargeV3, 16, 0));
+        assert!(would_exceed_memory(4 * GB, Model::LargeV3, 1, 0));
+        assert!(!would_exceed_memory(8 * GB, Model::LargeV3Turbo, 1, 0));
     }
 
     #[test]
@@ -505,7 +610,7 @@ mod tests {
     #[test]
     fn memory_guard_saturates_on_absurd_jobs() {
         // A pathological job count must refuse, never overflow-panic (no-panic rule).
-        assert!(would_exceed_memory(u64::MAX, Model::Tiny, usize::MAX));
+        assert!(would_exceed_memory(u64::MAX, Model::Tiny, usize::MAX, 0));
     }
 
     #[test]
@@ -514,19 +619,19 @@ mod tests {
         // to the estimate the 15% headroom is missing (refused); just above the 85%
         // line it fits.
         let est = info(Model::Tiny).size + info(Model::Tiny).size / 2 + DECODE_BUFFER;
-        assert!(would_exceed_memory(est, Model::Tiny, 1));
+        assert!(would_exceed_memory(est, Model::Tiny, 1, 0));
         let total_fits = est * 100 / MEMORY_BUDGET_PERCENT + 1;
-        assert!(!would_exceed_memory(total_fits, Model::Tiny, 1));
+        assert!(!would_exceed_memory(total_fits, Model::Tiny, 1, 0));
     }
 
     #[test]
     fn smart_default_shrinks_on_low_memory() {
-        assert_eq!(largest_fitting(8 * GB, 1), Model::LargeV3Turbo);
-        assert_eq!(largest_fitting(2 * GB, 1), Model::Small);
-        assert_eq!(largest_fitting(512 * 1024 * 1024, 1), Model::Tiny);
+        assert_eq!(largest_fitting(8 * GB, 1, 0), Model::LargeV3Turbo);
+        assert_eq!(largest_fitting(2 * GB, 1, 0), Model::Small);
+        assert_eq!(largest_fitting(512 * 1024 * 1024, 1, 0), Model::Tiny);
         // More jobs add decode buffers, so the largest that fits shrinks: 8 GiB at
         // 6 jobs can't hold turbo's weights plus 6 GiB of buffers.
-        assert_ne!(largest_fitting(8 * GB, 6), Model::LargeV3Turbo);
+        assert_ne!(largest_fitting(8 * GB, 6, 0), Model::LargeV3Turbo);
     }
 
     #[test]
@@ -534,24 +639,24 @@ mod tests {
         // Explicit pick passes through untouched, even when it won't fit (the
         // memory guard refuses it later — never a silent override).
         assert_eq!(
-            resolve_model(Some(Model::LargeV3), Some(2 * GB), 1),
+            resolve_model(Some(Model::LargeV3), Some(2 * GB), 1, 0),
             Model::LargeV3
         );
         // Omitted --model resolves to the largest that fits detected RAM.
-        assert_eq!(resolve_model(None, Some(8 * GB), 1), Model::LargeV3Turbo);
-        assert_eq!(resolve_model(None, Some(2 * GB), 1), Model::Small);
+        assert_eq!(resolve_model(None, Some(8 * GB), 1, 0), Model::LargeV3Turbo);
+        assert_eq!(resolve_model(None, Some(2 * GB), 1, 0), Model::Small);
         // Unknown RAM falls back to the nominal default.
-        assert_eq!(resolve_model(None, None, 1), DEFAULT_MODEL);
+        assert_eq!(resolve_model(None, None, 1, 0), DEFAULT_MODEL);
     }
 
     #[test]
     fn oom_hint_never_names_a_model_that_does_not_fit() {
         // When something fits, the hint names a fitting model.
-        let err = guard_memory(Model::LargeV3, 3, Some(8 * GB)).unwrap_err();
+        let err = guard_memory(Model::LargeV3, 3, Some(8 * GB), 0).unwrap_err();
         assert!(err.to_string().contains("fits is `"), "{err}");
         // When nothing fits at this RAM (even tiny exceeds budget), the hint must not
         // quote a model that was just refused — it points at lowering jobs instead.
-        let err = guard_memory(Model::LargeV3, 1, Some(GB)).unwrap_err();
+        let err = guard_memory(Model::LargeV3, 1, Some(GB), 0).unwrap_err();
         let msg = err.to_string();
         assert!(msg.contains("no model fits"), "{msg}");
         assert!(
@@ -570,12 +675,12 @@ mod tests {
         // correct, so that case is excluded.
         for &ram in &[4 * GB, 6 * GB, 8 * GB, 16 * GB] {
             for &jobs in &[1usize, 2, 4, 6, 12] {
-                if would_exceed_memory(ram, Model::Tiny, jobs) {
+                if would_exceed_memory(ram, Model::Tiny, jobs, 0) {
                     continue;
                 }
-                let model = resolve_model(None, Some(ram), jobs);
+                let model = resolve_model(None, Some(ram), jobs, 0);
                 assert!(
-                    !would_exceed_memory(ram, model, jobs),
+                    !would_exceed_memory(ram, model, jobs, 0),
                     "default {model} refused at {ram} bytes / {jobs} jobs though tiny fits"
                 );
             }

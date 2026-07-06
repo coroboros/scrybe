@@ -34,6 +34,9 @@ pub enum ScrybeError {
     Interrupted { completed: usize, total: usize },
     /// An unexpected I/O failure, such as writing an output file.
     Io { detail: String },
+    /// Speaker diarization failed at runtime (segmentation, embedding, or
+    /// clustering stage).
+    DiarizationFailed { detail: String },
 }
 
 impl ScrybeError {
@@ -55,6 +58,7 @@ impl ScrybeError {
             Self::FileNotFound { .. } => 14,
             Self::ModelLoadFailed { .. } => 15,
             Self::TranscriptionFailed { .. } => 16,
+            Self::DiarizationFailed { .. } => 17,
             // Both share the "batch incomplete" code; the message distinguishes them.
             Self::PartialBatchFailure { .. } | Self::Interrupted { .. } => 20,
             Self::Io { .. } => 1,
@@ -104,6 +108,10 @@ impl fmt::Display for ScrybeError {
                 "interrupted: {completed} of {total} files processed before stopping; no files were lost.",
             ),
             Self::Io { detail } => write!(f, "I/O error: {detail}"),
+            Self::DiarizationFailed { detail } => write!(
+                f,
+                "speaker diarization failed: {detail}. Re-fetch the diarization models with `scrybe models pull diarization`, or re-run without `--diarize`.",
+            ),
         }
     }
 }
@@ -116,7 +124,7 @@ mod tests {
 
     #[test]
     fn exit_codes_match_the_documented_contract() {
-        let cases: [(ScrybeError, i32); 10] = [
+        let cases: [(ScrybeError, i32); 11] = [
             (
                 ScrybeError::Io {
                     detail: String::new(),
@@ -169,6 +177,12 @@ mod tests {
                 16,
             ),
             (
+                ScrybeError::DiarizationFailed {
+                    detail: String::new(),
+                },
+                17,
+            ),
+            (
                 ScrybeError::PartialBatchFailure {
                     failed: 1,
                     processed: 2,
@@ -192,7 +206,7 @@ mod tests {
     fn display_messages_carry_their_actionable_token() {
         // The single red actionable line is part of the error contract; pin every
         // variant so a dropped recovery hint or broken interpolation fails a test.
-        let cases: [(ScrybeError, &str); 10] = [
+        let cases: [(ScrybeError, &str); 11] = [
             (
                 ScrybeError::unsupported_codec(Path::new("/a.m4a"), "HE-AAC"),
                 "--decoder ffmpeg",
@@ -234,6 +248,12 @@ mod tests {
                     detail: String::new(),
                 },
                 "smaller `--model`",
+            ),
+            (
+                ScrybeError::DiarizationFailed {
+                    detail: String::new(),
+                },
+                "models pull diarization",
             ),
             (
                 ScrybeError::PartialBatchFailure {
