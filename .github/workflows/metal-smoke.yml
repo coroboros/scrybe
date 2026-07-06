@@ -1,10 +1,11 @@
 name: Metal smoke
 
 # Compile-only check for the Metal backend (the exit-13 GPU arm), which the default CPU
-# pipeline never exercises. macos-latest ships the full Xcode + Metal toolchain, so the
-# build validates without a GPU runner. cuda/vulkan need their SDKs and are built locally
-# per the README. Supplements coroboros/ci's rust-packages pipeline, which builds the
-# default (CPU) features only.
+# pipeline never exercises. Pinned to macos-14 — the same runner the shipped aarch64
+# binary builds on, where ort links cleanly; the rolling macos-latest drifted to an
+# Xcode whose clang runtime path breaks ort's `-lclang_rt.osx` link. cuda/vulkan need
+# their SDKs and are built locally per the README. Supplements coroboros/ci's
+# rust-packages pipeline, which builds the default (CPU) features only.
 on:
   push:
     branches: [main]
@@ -16,7 +17,7 @@ permissions:
 jobs:
   metal:
     name: build · metal (macOS)
-    runs-on: macos-latest
+    runs-on: macos-14
     steps:
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10  # v6.0.3
       - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4  # v2.9.1
