@@ -5,9 +5,9 @@
 <!-- omit in toc -->
 # scrybe
 
-**Collapse sound into signal — a fast, offline Whisper transcription CLI.**
+**Collapse sound into signal — a fast, offline Whisper transcription & speaker-diarization CLI. No Python, no account.**
 
-Pure-Rust audio decode, whisper.cpp via whisper-rs, Metal on Apple Silicon and CPU everywhere. Point it at one file or a whole folder and get text back from the terminal. No Python, no system `ffmpeg`.
+Pure-Rust audio decode, whisper.cpp via whisper-rs, Metal on Apple Silicon and CPU everywhere. Point it at one file or a whole folder and get text — and who spoke — back from the terminal. No system `ffmpeg`.
 
 [![crates.io](https://img.shields.io/crates/v/coroboros-scrybe?style=flat-square&color=000000)](https://crates.io/crates/coroboros-scrybe)
 [![ci](https://img.shields.io/github/actions/workflow/status/coroboros/scrybe/ci.yml?branch=main&style=flat-square&label=ci&color=000000)](https://github.com/coroboros/scrybe/actions/workflows/ci.yml)
