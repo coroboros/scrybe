@@ -1,0 +1,70 @@
+name: Build static ONNX Runtime archives
+
+# One-shot: build CPU-only static ONNX Runtime v1.24.2 for the three dist targets
+# pyke cannot serve (x86_64-apple-darwin has no pyke binary; the Linux libs need
+# glibc >= 2.38 and would raise the shipped floor), and upload each as an artifact
+# plus its SHA-256. The archives are then hosted as release assets and consumed by
+# ci/setup.sh, which points ORT_LIB_PATH at the extracted tree so the release
+# `dist build` links a static runtime instead of downloading pyke's.
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: build · ${{ matrix.target }}
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { runner: macos-15-intel, target: x86_64-apple-darwin, ort-build-dir: build/MacOS/Release }
+          - { runner: ubuntu-22.04, target: x86_64-unknown-linux-gnu, ort-build-dir: build/Linux/Release }
+          - { runner: ubuntu-22.04-arm, target: aarch64-unknown-linux-gnu, ort-build-dir: build/Linux/Release }
+    steps:
+      - name: Install cmake (Linux)
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y cmake
+      - name: Build ONNX Runtime from source (static, CPU-only)
+        shell: bash
+        env:
+          MACOSX_DEPLOYMENT_TARGET: "13.4"
+        run: |
+          git clone --depth 1 --branch v1.24.2 --recurse-submodules --shallow-submodules \
+            https://github.com/microsoft/onnxruntime ort-src
+          cd ort-src
+          ./build.sh --config Release --parallel --skip_tests \
+            --compile_no_warning_as_error --skip_submodule_sync \
+            --cmake_extra_defines onnxruntime_BUILD_UNIT_TESTS=OFF
+          # re2 is fetched but only test targets depend on it, so `all` never builds
+          # it — ort-sys links it unconditionally. Build it explicitly.
+          cmake --build "${{ matrix.ort-build-dir }}" --target re2
+          cd ..
+          mkdir -p ort-prebuilt
+          rsync -am --include='*/' --include='*.a' --exclude='*' \
+            "ort-src/${{ matrix.ort-build-dir }}/" ort-prebuilt/
+      - name: Package + checksum
+        shell: bash
+        run: |
+          archive="ort-static-${{ matrix.target }}.tar.gz"
+          tar -C ort-prebuilt -czf "$archive" .
+          if command -v sha256sum >/dev/null; then
+            sha=$(sha256sum "$archive" | awk '{print $1}')
+          else
+            sha=$(shasum -a 256 "$archive" | awk '{print $1}')
+          fi
+          echo "$sha  $archive" | tee "$archive.sha256"
+          {
+            echo "### ${{ matrix.target }}"
+            echo "\`$sha\`"
+          } >> "$GITHUB_STEP_SUMMARY"
+      - name: Upload archive
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02  # v4.6.2
+        with:
+          name: ort-static-${{ matrix.target }}
+          path: |
+            ort-static-${{ matrix.target }}.tar.gz
+            ort-static-${{ matrix.target }}.tar.gz.sha256
+          if-no-files-found: error
