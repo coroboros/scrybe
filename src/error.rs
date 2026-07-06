@@ -22,7 +22,7 @@ pub enum ScrybeError {
     OutOfMemory { detail: String },
     /// The GPU backend failed to initialize.
     GpuInitFailed { detail: String },
-    /// Inference failed at runtime on the CPU backend (state/decode failure).
+    /// Inference failed at runtime after the backend initialized (state/decode failure).
     TranscriptionFailed { detail: String },
     /// An input path does not exist.
     FileNotFound { path: PathBuf },
