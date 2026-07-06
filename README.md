@@ -45,8 +45,6 @@ Pure-Rust audio decode, whisper.cpp via whisper-rs, Metal on Apple Silicon and C
 
 ## Install
 
-> scrybe is pre-release. Build from source today; the binary distributions below go live on the first published release.
-
 ```sh
 brew install coroboros/tap/scrybe   # macOS — the blessed path
 npx @coroboros/scrybe               # Node toolchains
@@ -100,7 +98,7 @@ Running Whisper from the terminal usually means a Python environment, a system `
 | `tiny` / `base` / `small` | small and fast, lower accuracy |
 | `large-v3` | most accurate, translation-capable |
 | `large-v3-turbo` | default — near-`large-v3` accuracy, much faster |
-| `distil-large-v3.5` | distilled, fast, English-leaning |
+| `distil-large-v3.5` | distilled, fast, English-only (rejects a non-English `--lang`) |
 
 </details>
 
@@ -208,6 +206,8 @@ The cache honors `HF_HOME`. Downloads are resumable and verified against a pinne
 
 Subtitle timestamps are sanitized: never negative, never overlapping. JSON carries a `schema_version` so downstream tooling can pin it.
 
+Speaker labels differ by audience: the human formats (txt, srt, vtt) read `Speaker 1`, `Speaker 2`, … while the machine formats (json, tsv, csv) use `SPEAKER_00`, `SPEAKER_01`, … — WhisperX-compatible and zero-indexed, so the same speaker is `Speaker 1` in a subtitle and `SPEAKER_00` in the JSON.
+
 <details>
 <summary>JSON schema</summary>
 
@@ -298,7 +298,7 @@ Stable across releases — only ever added, never renumbered.
 | Native multi-codec decode, no system `ffmpeg` | no | no (16 kHz WAV / ffmpeg) | no | no | yes |
 | Apple Silicon GPU (Metal) | no (CPU/CUDA) | yes | no (CPU/CUDA) | no (CUDA) | yes |
 | Folder/batch with progress + summary | no | no | no | no | yes |
-| Output txt/srt/vtt/json/tsv/csv | yes (no csv) | yes (no tsv) | via wrapper | yes (no tsv/csv) | yes |
+| Output txt/srt/vtt/json/tsv/csv | yes (no csv) | yes (no tsv) | via wrapper | yes (no csv) | yes |
 | Zero-config model + concurrency | no | no | no | no | yes |
 | Stable exit-code contract | no | no | no | no | yes |
 | Word-level timestamps | yes | yes | yes | yes (alignment) | yes (JSON) |

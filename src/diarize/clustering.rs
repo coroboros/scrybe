@@ -205,7 +205,7 @@ fn constrained_cut(
     order.sort_by(|&a, &b| {
         let da = (steps[a].dissimilarity - CLUSTER_THRESHOLD).abs();
         let db = (steps[b].dissimilarity - CLUSTER_THRESHOLD).abs();
-        da.partial_cmp(&db).unwrap_or(std::cmp::Ordering::Equal)
+        da.total_cmp(&db)
     });
 
     let mut best_iteration = steps.len().saturating_sub(1);
@@ -301,7 +301,7 @@ fn absorb_small_clusters(clusters: &mut [usize], large: &[usize], normed: &[Vec<
         let mut best = large_centroids[0].0;
         let mut best_d = f64::INFINITY;
         for (label, c) in &large_centroids {
-            let d = cosine_distance_f64(&small_centroid, c);
+            let d = cosine_distance(&small_centroid, c);
             if d < best_d {
                 best_d = d;
                 best = *label;
@@ -313,9 +313,11 @@ fn absorb_small_clusters(clusters: &mut [usize], large: &[usize], normed: &[Vec<
     }
 }
 
-/// Renumber labels to dense `0..k`, ordered by the smallest member index —
-/// deterministic, like `np.unique(..., return_inverse=True)` up to a
-/// relabeling that downstream ordering by first appearance absorbs.
+/// Renumber labels to dense `0..k` by first appearance — deterministic. The id
+/// order feeds `reconstruct`'s lower-index support-tie break, so on overlapped
+/// audio with exactly tied support it may keep a different cluster than the
+/// reference's `np.unique` numbering; the pick is DER-invariant (same
+/// partition), and `to_turns` renumbers the final speakers by time regardless.
 fn densify(clusters: &mut [usize]) {
     let mut map = std::collections::HashMap::new();
     let mut next = 0usize;
@@ -341,23 +343,12 @@ fn l2_normalized(e: &[f32]) -> Vec<f64> {
     e.iter().map(|&v| f64::from(v) / norm).collect()
 }
 
-fn cosine_distance(a: &[f32], b: &[f64]) -> f64 {
+/// Cosine distance `1 - cos(a, b)`; a zero-norm side yields 1.0. Generic over
+/// the left operand so raw f32 embeddings and f64 centroids share one path.
+fn cosine_distance<A: Copy + Into<f64>>(a: &[A], b: &[f64]) -> f64 {
     let (mut dot, mut na, mut nb) = (0.0_f64, 0.0_f64, 0.0_f64);
     for (&x, &y) in a.iter().zip(b) {
-        let x = f64::from(x);
-        dot += x * y;
-        na += x * x;
-        nb += y * y;
-    }
-    if na == 0.0 || nb == 0.0 {
-        return 1.0;
-    }
-    1.0 - dot / (na.sqrt() * nb.sqrt())
-}
-
-fn cosine_distance_f64(a: &[f64], b: &[f64]) -> f64 {
-    let (mut dot, mut na, mut nb) = (0.0_f64, 0.0_f64, 0.0_f64);
-    for (&x, &y) in a.iter().zip(b) {
+        let x: f64 = x.into();
         dot += x * y;
         na += x * x;
         nb += y * y;

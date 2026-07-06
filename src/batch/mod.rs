@@ -352,17 +352,19 @@ fn transcribe_one(
         Ok(t) => t,
         Err(e) => return (duration, Outcome::Failed(e.to_string())),
     };
-    if let Some((diarizer, options)) = diarize {
-        // A Ctrl-C after transcription skips diarization so the run stops
-        // promptly — but the completed transcript is still written (undiarized),
-        // never discarded, keeping the graceful-stop-after-the-in-flight-file
-        // contract that costs the user no lost transcription work.
-        if !interrupted.load(Ordering::SeqCst) {
-            bar.set_message("diarizing");
-            match diarizer.diarize(&pcm.samples, options) {
-                Ok(turns) => diarize::assign_speakers(&mut transcript, &turns),
-                Err(e) => return (duration, Outcome::Failed(e.to_string())),
-            }
+    // Diarization is a best-effort enhancement of a completed transcription;
+    // neither a Ctrl-C nor a runtime failure discards that work. Ctrl-C skips
+    // diarization so the run stops promptly; a diarize error is recorded and the
+    // transcript is still written (undiarized) below, but the file is reported
+    // failed so the run's exit code flags it.
+    let mut diarize_error = None;
+    if let Some((diarizer, options)) = diarize
+        && !interrupted.load(Ordering::SeqCst)
+    {
+        bar.set_message("diarizing");
+        match diarizer.diarize(&pcm.samples, options) {
+            Ok(turns) => diarize::assign_speakers(&mut transcript, &turns),
+            Err(e) => diarize_error = Some(e.to_string()),
         }
     }
     let meta = output::Meta {
@@ -371,13 +373,21 @@ fn transcribe_one(
         diarized: cfg.diarized,
     };
     match output::write_outputs(&transcript, file, cfg.formats, cfg.out_dir, &meta) {
-        Ok(outputs) => (
-            duration,
-            Outcome::Done {
-                outputs,
-                language: transcript.language,
-            },
-        ),
+        Ok(outputs) => match diarize_error {
+            Some(e) => (
+                duration,
+                Outcome::Failed(format!(
+                    "diarization failed: {e} transcript saved without speakers"
+                )),
+            ),
+            None => (
+                duration,
+                Outcome::Done {
+                    outputs,
+                    language: transcript.language,
+                },
+            ),
+        },
         Err(e) => (duration, Outcome::Failed(e.to_string())),
     }
 }

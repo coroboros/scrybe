@@ -20,11 +20,7 @@ fn dominant_speaker(turns: &[Turn], start: f64, end: f64) -> Option<usize> {
     overlap
         .into_iter()
         // Ties resolve to the lower speaker id, deterministically.
-        .max_by(|a, b| {
-            a.1.partial_cmp(&b.1)
-                .unwrap_or(std::cmp::Ordering::Equal)
-                .then(b.0.cmp(&a.0))
-        })
+        .max_by(|a, b| a.1.total_cmp(&b.1).then(b.0.cmp(&a.0)))
         .map(|(speaker, _)| speaker)
 }
 

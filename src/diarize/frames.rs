@@ -78,7 +78,6 @@ pub(crate) fn reconstruct(
     let mut support = vec![vec![0.0_f64; num_columns]; total];
     for (i, chunk) in chunks.iter().enumerate() {
         let start = chunk_start_frame(i);
-        // Local speakers of this chunk, grouped by their global cluster.
         let mut locals_by_cluster = vec![Vec::new(); num_clusters];
         for s in 0..NUM_LOCAL_SPEAKERS {
             let label = labels[i * NUM_LOCAL_SPEAKERS + s];
@@ -99,16 +98,13 @@ pub(crate) fn reconstruct(
     }
 
     let mut binary = vec![vec![false; num_columns]; total];
+    // Reused across frames: the comparator is a strict total order, so re-sorting
+    // the permuted buffer yields the same result as a fresh `0..num_columns`.
+    let mut order: Vec<usize> = (0..num_columns).collect();
     for (t, row) in support.iter().enumerate() {
-        let mut order: Vec<usize> = (0..num_columns).collect();
         // Descending support; ties resolve to the lower column index, like
         // np.argsort's stable sort on negated values.
-        order.sort_by(|&a, &b| {
-            row[b]
-                .partial_cmp(&row[a])
-                .unwrap_or(std::cmp::Ordering::Equal)
-                .then(a.cmp(&b))
-        });
+        order.sort_by(|&a, &b| row[b].total_cmp(&row[a]).then(a.cmp(&b)));
         for &k in order.iter().take(count[t] as usize) {
             binary[t][k] = true;
         }
@@ -151,10 +147,12 @@ pub(crate) fn to_turns(binary: &[Vec<bool>]) -> Vec<Turn> {
         }
     }
 
+    // (start, end, speaker) — the reference's key; `end` breaks same-start ties
+    // before the id so first-appearance renumbering matches pyannote.
     turns.sort_by(|a, b| {
         a.start
-            .partial_cmp(&b.start)
-            .unwrap_or(std::cmp::Ordering::Equal)
+            .total_cmp(&b.start)
+            .then(a.end.total_cmp(&b.end))
             .then(a.speaker.cmp(&b.speaker))
     });
 

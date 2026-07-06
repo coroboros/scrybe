@@ -48,11 +48,10 @@ pub(crate) fn segmentation_activity(
 ) -> Result<ChunkActivity, ScrybeError> {
     debug_assert_eq!(window.len(), WINDOW_SAMPLES);
     let out_name = first_output(session)?;
-    let input =
-        ndarray::Array3::from_shape_vec((1, 1, window.len()), window.to_vec()).map_err(run_err)?;
+    // Borrow the window directly as a [1,1,N] tensor — no copy, no ndarray.
     let outputs = session
         .run(ort::inputs![
-            TensorRef::from_array_view(input.view()).map_err(run_err)?
+            TensorRef::from_array_view(([1, 1, window.len()], window)).map_err(run_err)?
         ])
         .map_err(run_err)?;
     let logits = outputs[out_name.as_str()]
@@ -82,12 +81,14 @@ pub(crate) fn embed(
     features: &[[f32; NUM_MEL_BINS]],
 ) -> Result<Vec<f32>, ScrybeError> {
     let out_name = first_output(session)?;
-    let flat: Vec<f32> = features.iter().flatten().copied().collect();
-    let input = ndarray::Array3::from_shape_vec((1, features.len(), NUM_MEL_BINS), flat)
-        .map_err(run_err)?;
+    // `as_flattened` reinterprets &[[f32; 80]] as &[f32] — no copy.
     let outputs = session
         .run(ort::inputs![
-            TensorRef::from_array_view(input.view()).map_err(run_err)?
+            TensorRef::from_array_view((
+                [1, features.len(), NUM_MEL_BINS],
+                features.as_flattened()
+            ))
+            .map_err(run_err)?
         ])
         .map_err(run_err)?;
     let embedding = outputs[out_name.as_str()]

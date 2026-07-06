@@ -186,13 +186,23 @@ fn render_srt(transcript: &Transcript) -> String {
     out
 }
 
+/// Escape the three characters WebVTT reads as cue markup, so a `<` or `&` in
+/// the transcript can't open an unterminated tag and swallow the rest of the
+/// cue. `&` first, or it double-escapes the entities it introduces.
+fn vtt_escape(text: &str) -> String {
+    text.replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
+}
+
 fn render_vtt(transcript: &Transcript) -> String {
     let mut out = String::from("WEBVTT\n\n");
     for segment in sanitized(&transcript.segments) {
+        let escaped = vtt_escape(segment.text);
         let text = match segment.speaker {
             // The WebVTT voice span: players label and style the speaker.
-            Some(speaker) => format!("<v {}>{}", speaker_name(speaker), segment.text),
-            None => segment.text.to_owned(),
+            Some(speaker) => format!("<v {}>{}", speaker_name(speaker), escaped),
+            None => escaped,
         };
         let _ = writeln!(
             out,
@@ -550,6 +560,28 @@ mod tests {
     }
 
     #[test]
+    fn vtt_escapes_cue_markup_characters() {
+        // A `<` or `&` in the transcript must not open WebVTT markup and eat the
+        // rest of the cue; the `<v …>` voice tag stays literal.
+        let t = Transcript {
+            language: "en".to_owned(),
+            segments: vec![Segment {
+                start: 0.0,
+                end: 1.0,
+                text: "x < y & AT&T".to_owned(),
+                words: vec![],
+                speaker: Some(0),
+            }],
+        };
+        let vtt = render_vtt(&t);
+        assert!(
+            vtt.contains("<v Speaker 1>x &lt; y &amp; AT&amp;T"),
+            "{vtt}"
+        );
+        assert!(!vtt.contains("y & AT"), "raw ampersand leaked: {vtt}");
+    }
+
+    #[test]
     fn tsv_has_header_and_millisecond_rows() {
         let tsv = render_tsv(&transcript(), false);
         assert!(tsv.starts_with("start\tend\ttext\n"));
@@ -568,9 +600,8 @@ mod tests {
 
     #[test]
     fn tabular_speaker_column_follows_the_flag_not_the_data() {
-        // Column presence tracks --diarize, not whether speakers were found, so a
-        // batch keeps one schema: a diarized-but-speakerless transcript still emits
-        // the column (empty cells), never a narrower row than its siblings.
+        // A diarized-but-speakerless transcript keeps the column (empty cells),
+        // so a batch never mixes 3- and 4-column files.
         let speakerless = transcript(); // both segments have speaker: None
         let tsv = render_tsv(&speakerless, true);
         assert!(tsv.starts_with("start\tend\ttext\tspeaker\n"));
