@@ -100,6 +100,12 @@ provision_ort() {
   echo "ORT_LIB_PATH=${dest}" >> "${GITHUB_ENV:-/dev/null}"
 }
 
+# One target per dist leg today. A space-joined multi-target CARGO_DIST_TARGET
+# (universal2 / cargo-dist merge-tasks) would need per-arch ORT trees, so fail loud
+# rather than mis-provision if one ever appears.
 if [ "${dist_build}" = true ]; then
-  provision_ort "${CARGO_DIST_TARGET}"
+  case "${CARGO_DIST_TARGET}" in
+    *" "*) echo "::error::ci/setup.sh provisions one target per leg, got '${CARGO_DIST_TARGET}'"; exit 1 ;;
+    *) provision_ort "${CARGO_DIST_TARGET}" ;;
+  esac
 fi

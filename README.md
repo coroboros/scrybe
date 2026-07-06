@@ -41,7 +41,7 @@ Pure-Rust audio decode, whisper.cpp via whisper-rs, Metal on Apple Silicon and C
 - macOS (Apple Silicon or Intel), Linux, or Windows.
 - A few hundred MB to ~8 GB of free RAM, depending on the model. scrybe auto-selects the largest model that fits detected RAM, so it runs on small machines and scales up on large ones.
 - **From a prebuilt binary** — nothing else. The binary embeds whisper.cpp and the voice-activity model.
-- **From source** — a C/C++ toolchain and CMake (whisper.cpp is built by `whisper-rs-sys`). Apple Silicon adds the Metal backend with `--features metal`.
+- **From source** — a C/C++ toolchain and CMake (whisper.cpp is built by `whisper-rs-sys`). Apple Silicon adds the Metal backend with `--features metal`. Diarization's ONNX Runtime downloads a prebuilt static lib on most targets; on Intel macOS and glibc-2.35 Linux it must be self-built (`ORT_LIB_PATH`) — the prebuilt binaries already ship it, so prefer those there.
 
 ## Install
 

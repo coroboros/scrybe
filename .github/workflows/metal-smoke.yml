@@ -1,11 +1,12 @@
 name: Metal smoke
 
 # Compile-only check for the Metal backend (the exit-13 GPU arm), which the default CPU
-# pipeline never exercises. Pinned to macos-14 — the same runner the shipped aarch64
-# binary builds on, where ort links cleanly; the rolling macos-latest drifted to an
-# Xcode whose clang runtime path breaks ort's `-lclang_rt.osx` link. cuda/vulkan need
-# their SDKs and are built locally per the README. Supplements coroboros/ci's
-# rust-packages pipeline, which builds the default (CPU) features only.
+# pipeline never exercises. Pinned to macos-14 (the runner the shipped aarch64 binary
+# builds on, where ort links cleanly). CXXFLAGS forces C++17: a recent macOS image had
+# whisper-rs-sys compile whisper.cpp's own sources without a `-std` flag, failing on
+# `constexpr` and map initializer-lists — the ggml sources already build as gnu++17.
+# cuda/vulkan need their SDKs and are built locally per the README. Supplements
+# coroboros/ci's rust-packages pipeline, which builds the default (CPU) features only.
 on:
   push:
     branches: [main]
@@ -18,6 +19,8 @@ jobs:
   metal:
     name: build · metal (macOS)
     runs-on: macos-14
+    env:
+      CXXFLAGS: "-std=gnu++17"
     steps:
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10  # v6.0.3
       - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4  # v2.9.1
