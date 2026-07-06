@@ -8,11 +8,6 @@ name: Build static ONNX Runtime archives
 # `dist build` links a static runtime instead of downloading pyke's.
 on:
   workflow_dispatch:
-  # Temporary while building the archives on this branch; removed before merge —
-  # workflow_dispatch needs the file on the default branch to be found by name.
-  push:
-    branches: [ci/ort-vendored-archives]
-    paths: [.github/workflows/build-ort-archives.yml]
 
 permissions:
   contents: read

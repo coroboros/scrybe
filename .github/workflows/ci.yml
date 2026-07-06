@@ -3,7 +3,9 @@ name: CI
 on:
   push:
     branches: [main]
-    tags: ['*']
+    # SemVer version tags only — a release fires on `x.y.z`, never on an
+    # auxiliary tag like the `ort-static-*` archive host.
+    tags: ['[0-9]+.[0-9]+.[0-9]+']
   pull_request:
   workflow_dispatch:
 
