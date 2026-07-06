@@ -3,13 +3,13 @@ name = "coroboros-scrybe"
 version = "0.1.5"
 edition = "2024"
 rust-version = "1.96"
-description = "Collapse sound into signal — a fast, offline Whisper transcription CLI."
+description = "Collapse sound into signal — a fast, offline Whisper transcription & speaker-diarization CLI. No Python, no account."
 authors = ["Coroboros <ob@coroboros.com>"]
 license = "MIT"
 readme = "README.md"
 repository = "https://github.com/coroboros/scrybe"
 homepage = "https://github.com/coroboros/scrybe#readme"
-keywords = ["whisper", "transcription", "speech-to-text", "cli", "audio"]
+keywords = ["whisper", "transcription", "diarization", "speech-to-text", "cli"]
 categories = ["command-line-utilities", "multimedia::audio"]
 # The `scrybe` crate id is taken on crates.io, so the package publishes as
 # `coroboros-scrybe`; the binary, the `@coroboros/scrybe` npm wrapper, and the
