@@ -7,6 +7,12 @@ updates:
     groups:
       cargo:
         patterns: ["*"]
+    ignore:
+      # rubato's latest (3.0.0) requires audioadapter-buffers ^3.0; a 4.x major would
+      # put two versions in the tree and break the resample trait bounds. Hold until
+      # rubato ships a release that consumes audioadapter-buffers 4.x.
+      - dependency-name: audioadapter-buffers
+        update-types: ["version-update:semver-major"]
 
   - package-ecosystem: github-actions
     directory: "/"
