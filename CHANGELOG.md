@@ -1,5 +1,21 @@
 # Changelog
 
+## v0.2.0 - 07/07/2026
+
+### Features
+- `diarize` — offline speaker diarization on an ONNX Runtime substrate (#11)
+
+### Fixes
+- `dist` — move msvc-crt-static to workspace.metadata so cargo-dist reads it (#17)
+- `dist` — link the Windows build against the dynamic CRT (#14)
+
+### Configuration
+- `deps` — bump indicatif and sysinfo (#16)
+- `deps` — bump the actions group (upload-artifact 7, checkout 7) (#13)
+- `deps` — hold audioadapter-buffers major until rubato supports it (#15)
+- provision static ONNX Runtime for the release dist build (#12)
+
+
 ## v0.1.5 - 17/06/2026
 
 ### Configuration
