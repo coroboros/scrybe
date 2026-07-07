@@ -1,0 +1,20 @@
+name: Windows dist CRT smoke
+
+# TEMPORARY — remove before merge. Proves `msvc-crt-static = false` links on the
+# Windows target that failed the 0.2.0 dist build (`--profile dist`, no +crt-static).
+on:
+  push:
+    branches: [fix/windows-dist-crt]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  win-link:
+    name: link · x86_64-pc-windows-msvc (dist)
+    runs-on: windows-2022
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10  # v6.0.3
+      - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4  # v2.9.1
+      - run: cargo build --profile dist --bin scrybe
