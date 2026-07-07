@@ -109,6 +109,9 @@ targets = [
     "aarch64-unknown-linux-gnu",
     "x86_64-pc-windows-msvc",
 ]
+# pyke's prebuilt ONNX Runtime links the dynamic CRT; match it, or cargo-dist's
+# `+crt-static` default leaves ORT's CRT imports unresolved on the Windows link.
+msvc-crt-static = false
 tap = "coroboros/homebrew-tap"
 # Decouple the user-facing names from the `coroboros-scrybe` crate id:
 # Homebrew `scrybe`, npm `@coroboros/scrybe`, binary `scrybe` (via [[bin]]).
