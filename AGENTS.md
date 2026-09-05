@@ -40,6 +40,7 @@ everywhere), pure-Rust audio decode.
 
 ## Rules
 
+- Keep public artifacts free of private rule paths, local machine paths, and internal tooling.
 - **No panics on user input.** Every user-facing failure routes through `ScrybeError`; `unwrap`/`expect`/`panic` are deny-level clippy lints. Validate at boundaries, return a coded error.
 - **Exit codes are a contract.** The `error.rs` code map is stable across releases — never change a code, only add. Argument errors are clap's (exit `2`).
 - **Color always paints; the stream decides.** Render via `color::paint` and let `anstream` strip ANSI when output is not a terminal or `NO_COLOR` is set. Honor `--no-color`.
