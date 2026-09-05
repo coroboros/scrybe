@@ -7,6 +7,16 @@ use ort::session::Session;
 use scrybe::error::ScrybeError;
 
 #[test]
+fn minimum_api_supports_the_pinned_dist_runtime() {
+    const {
+        assert!(
+            ort::MINOR_VERSION <= 24,
+            "the dist archives provide ONNX Runtime 1.24.2; newer API requirements would break those targets"
+        );
+    }
+}
+
+#[test]
 fn ort_initializes_on_this_target() {
     // Builder creation boots the ORT environment: proves the statically linked
     // runtime is present and callable on this target.

@@ -28,7 +28,7 @@ path = "src/main.rs"
 [dependencies]
 anstream = "1.0.0"
 anstyle = "1.0.14"
-audioadapter-buffers = "3.0.0"
+audioadapter-buffers = "5.1.0"
 clap = { version = "4.6.1", features = ["derive"] }
 ctrlc = "3.5.2"
 # `default-features = false` + the sync `ureq` backend keeps the async reqwest/hyper/
@@ -41,11 +41,12 @@ ndarray = "0.17"
 # Exact-pinned like whisper-rs: ort is a pre-1.0 rc line, and its build script
 # fetches a SHA-256-verified ONNX Runtime static lib matched to the crate version —
 # a silent bump would swap the linked runtime.
-ort = "=2.0.0-rc.12"
+# Keep the minimum API compatible with the pinned 1.24.2 dist archives.
+ort = { version = "=2.0.0-rc.13", default-features = false, features = ["std", "ndarray", "tracing", "download-binaries", "tls-native", "copy-dylibs", "api-24"] }
 rayon = "1.12.0"
 # Same realfft rubato already pulls in — no new code compiled.
 realfft = "3.5.0"
-rubato = "3.0.0"
+rubato = "5.0.0"
 serde = { version = "1.0.228", features = ["derive"] }
 serde_json = "1.0.150"
 sha2 = "0.11.0"
