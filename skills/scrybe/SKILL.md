@@ -1,6 +1,6 @@
 ---
 name: scrybe
-description: Transcribes speech to text offline with scrybe — a fast, self-contained Whisper CLI (no Python, no system ffmpeg). Reads common audio (wav, mp3, flac, ogg) and mp4/m4a files, one file or a whole folder, and writes txt, srt, vtt, json, tsv, or csv; it also labels who spoke (--diarize, offline, no account) and translates foreign-language speech to English in one pass. Use when someone wants a transcript, subtitles, captions, speaker labels, or speech-to-text from a local recording, audio file, or video — phrasings like "transcribe this", "pull the text out of this recording", "get subtitles for this video", "speech to text", "caption this audio", "who said what", or "what's said in this clip".
+description: Transcribe local audio or video with the offline scrybe CLI. Use for transcripts, subtitles, speaker labels, or speech-to-English translation.
 ---
 
 # scrybe
