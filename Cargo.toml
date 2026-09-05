@@ -1,6 +1,6 @@
 [package]
 name = "coroboros-scrybe"
-version = "0.2.0"
+version = "0.2.1"
 edition = "2024"
 rust-version = "1.96"
 description = "Collapse sound into signal — a fast, offline Whisper transcription & speaker-diarization CLI. No Python, no account."

@@ -1,5 +1,11 @@
 # Changelog
 
+## v0.2.1 - 05/09/2026
+
+### Fixes
+- update audio dependencies and share project instructions
+
+
 ## v0.2.0 - 07/07/2026
 
 ### Features
