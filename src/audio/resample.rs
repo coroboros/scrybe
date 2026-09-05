@@ -6,7 +6,7 @@
 //! clips. A 16 kHz source is a passthrough.
 
 use audioadapter_buffers::direct::InterleavedSlice;
-use rubato::{Fft, FixedSync, Indexing, Resampler};
+use rubato::{Fft, FixedSync, Indexing, Resampler, WindowFunction};
 
 use super::TARGET_SAMPLE_RATE;
 
@@ -62,12 +62,13 @@ impl Resampler16k {
         if src_rate == TARGET_SAMPLE_RATE {
             return Ok(Self::passthrough(ceiling));
         }
-        let inner = Fft::<f32>::new(
+        let inner = Fft::<f32>::new_custom(
             src_rate as usize,
             TARGET_SAMPLE_RATE as usize,
             FFT_CHUNK,
             FFT_SUB_CHUNKS,
             CHANNELS,
+            WindowFunction::BlackmanHarris2,
             FixedSync::Input,
         )
         .map_err(|e| ResampleError::Failed(e.to_string()))?;
