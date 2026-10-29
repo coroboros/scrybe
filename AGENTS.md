@@ -8,11 +8,11 @@ Offline transcription and speaker diarization CLI in Rust, with whisper.cpp and 
 - Route user-facing failures through `ScrybeError`. Keep the deny-level panic lints; validate external inputs at their boundaries.
 - Render colors through `color::paint` and `anstream`, preserving `--no-color` and `NO_COLOR`. `cli::DEFAULT_MODEL` remains the shared default.
 - `skills/scrybe/SKILL.md` is the single skill source, embedded by `src/skills/mod.rs`; edit it once for installation and `skills get`.
-- Native build and test setup lives in `ci/setup.sh`, `ci/test.env` and `ci/test-setup.sh`. Keep public artifacts free of private paths and infrastructure references.
+- Native build and test setup lives in `ci/setup.sh`, `ci/test.env` and `ci/test-setup.sh`.
 
 ## Validation
 
-The toolchain is pinned in `rust-toolchain.toml`. Rust or dependency changes require `cargo fmt --check`, `cargo clippy --all-targets` and `cargo test`; documentation-only edits need Markdown and reference checks.
+The toolchain is pinned in `rust-toolchain.toml`. Rust or dependency changes require `cargo fmt --check`, `cargo clippy --all-targets` and `cargo test`.
 
 Tests cover transcription, decoder fallback and diarization only when their fixtures are available. For those changes and release verification, use the setup hooks and all three `SCRYBE_REQUIRE_*` flags in `ci/test.env`; report missing fixtures or skipped paths. Model setup can download files. Reuse passing results while the tested inputs remain unchanged.
 
