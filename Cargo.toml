@@ -42,7 +42,7 @@ ndarray = "0.17"
 # fetches a SHA-256-verified ONNX Runtime static lib matched to the crate version —
 # a silent bump would swap the linked runtime.
 # Keep the minimum API compatible with the pinned 1.24.2 dist archives.
-ort = { version = "=2.0.0-rc.13", default-features = false, features = ["std", "ndarray", "tracing", "download-binaries", "tls-native", "copy-dylibs", "api-24"] }
+ort = { version = "=2.0.0-rc.14", default-features = false, features = ["std", "ndarray", "tracing", "download-binaries", "tls-native", "copy-dylibs", "api-24"] }
 rayon = "1.12.0"
 # Same realfft rubato already pulls in — no new code compiled.
 realfft = "3.5.0"
